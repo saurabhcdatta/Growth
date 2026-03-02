@@ -126,10 +126,10 @@ setorderv(qtrly, c("categories","date"))
 all_quarters <- sort(unique(qtrly$date))
 cats         <- sort(unique(qtrly$cat_label))
 message(sprintf("    Categories : %s", paste(cats, collapse=" | ")))
-message(sprintf("    Date range : %s → %s  (%d quarters)",
+message(sprintf("    Date range : %s → %s  (%s quarters)",
                 as.character(min(all_quarters)),
                 as.character(max(all_quarters)),
-                length(all_quarters)))
+                as.character(length(all_quarters))))
 
 # ════════════════════════════════════════════════════════════
 # 3. DEFINE TARGETS AND FEATURES
@@ -306,8 +306,8 @@ for (raw_v in EXIT_VARS_RAW) {
       lag1_vals[idx] <- c(NA_real_, vals[-length(vals)])
     }
     qtrly[[lag1_name]] <- lag1_vals
-    message(sprintf("    [LAG1 CREATED] %s  (non-NA: %d)",
-                    lag1_name, sum(!is.na(lag1_vals))))
+    message(sprintf("    [LAG1 CREATED] %s  (non-NA: %s)",
+                    lag1_name, as.character(sum(!is.na(lag1_vals)))))
   }
 }
 # Refresh numeric column list after potential new columns
@@ -343,13 +343,13 @@ HARD_EXCL <- c("yoy_ficu_assets_pct","yoy_fiscu_assets_pct",
                "q1","q2","q3","q4")   # explicitly exclude all quarter dummies
 FEATS_ALL <- setdiff(FEATS_ALL, HARD_EXCL)
 
-message(sprintf("    Curated macro vars: %d base series", length(CURATED_MACRO)))
-message(sprintf("    Macro features    : %d (incl. transforms)", length(macro_feats)))
-message(sprintf("    Exit rate features: %d", length(exit_feats)))
+message(sprintf("    Curated macro vars: %s base series", as.character(length(CURATED_MACRO))))
+message(sprintf("    Macro features    : %s (incl. transforms)", as.character(length(macro_feats))))
+message(sprintf("    Exit rate features: %s", as.character(length(exit_feats))))
 message(sprintf("    Seasonal dummies  : EXCLUDED (ARIMA seasonal structure handles this)"))
-message(sprintf("    Total features    : %d", length(FEATS_ALL)))
-message(sprintf("    (was ~500+ with all FRB transforms; now focused on %d causal drivers)",
-                length(FEATS_ALL)))
+message(sprintf("    Total features    : %s", as.character(length(FEATS_ALL))))
+message(sprintf("    (was ~500+ with all FRB transforms; now focused on %s causal drivers)",
+                as.character(length(FEATS_ALL))))
 
 # ── Macro column diagnostic ───────────────────────────────────
 # Wrapped in local({}) so the if/else block is paste-safe in R console.
@@ -377,11 +377,11 @@ for (bv in CURATED_MACRO) {
     missed_base <- c(missed_base, bv)
   }
 }
-message(sprintf("    Found  (%d): %s",
+message(sprintf("    Found  (%s): %s",
                 length(found_base),
                 paste(found_base, collapse=", ")))
 if (length(missed_base) > 0) {
-  message(sprintf("    MISSING(%d): %s  <-- check VAR_MAP naming in macro_v4",
+  message(sprintf("    MISSING(%s): %s  <-- check VAR_MAP naming in macro_v4",
                   length(missed_base),
                   paste(missed_base, collapse=", ")))
 } else {
@@ -575,7 +575,7 @@ build_coef_dt <- function(fit, n_obs, sig_vars = character(0)) {
     ord <- tryCatch(forecast::arimaorder(fit), error=function(e) NULL)
     ord_str <- if (!is.null(ord)) {
                  .si <- function(x) if(!is.null(x)&&is.finite(x)) as.integer(x) else 0L
-                 sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
+                 sprintf("ARIMA(%s,%s,%s)(%s,%s,%s)[4]",
                          .si(ord["p"]),.si(ord["d"]),.si(ord["q"]),
                          .si(ord["P"]),.si(ord["D"]),.si(ord["Q"]))
                } else "ARIMA(0,d,0)"
@@ -645,13 +645,13 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
 
   # Absolute floor — 6 obs minimum to fit any ARIMA
   if (n_valid < 6L)
-    return(list(ok=FALSE, reason=sprintf("only %d non-NA obs (need >=6)", n_valid)))
+    return(list(ok=FALSE, reason=sprintf("only %s non-NA obs (need >=6)", as.character(n_valid))))
 
   # Flag sparse mode: below standard threshold → skip LASSO,
   # use pure ARIMA or a minimal hand-picked xreg set
   sparse_mode <- (n_valid < min_obs)
   if (sparse_mode)
-    message(sprintf("        [SPARSE] %d obs < %d — skipping LASSO, using pure ARIMAX",
+    message(sprintf("        [SPARSE] %s obs < %s — skipping LASSO, using pure ARIMAX",
                     n_valid, min_obs))
 
   y_train_w <- winsorise(y_train)
@@ -808,7 +808,7 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
     } else {
       candidates <- prot_avail[seq_len(min(MAX_XREG_VARS, length(prot_avail)))]
     }
-    message(sprintf("        [XREG CAP] capped to %d vars", length(candidates)))
+    message(sprintf("        [XREG CAP] capped to %s vars", as.character(length(candidates))))
   }
 
   # Build training medians for test-row imputation
@@ -1098,7 +1098,7 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
 message("\n[4] Rolling-window TSCV-ARIMAX (14 models)...")
 message(sprintf("    Training window start : 2005 Q1"))
 message(sprintf("    First test quarter    : %s", as.character(TRAIN_END)))
-message(sprintf("    Max xreg vars         : %d", MAX_XREG_VARS))
+message(sprintf("    Max xreg vars         : %s", as.character(MAX_XREG_VARS)))
 message(sprintf("    Mode                  : %s",
                 if(DEBUG_MODE) "DEBUG" else "PRODUCTION"))
 
@@ -1106,8 +1106,8 @@ test_quarters <- all_quarters[all_quarters > TRAIN_END]
 if (DEBUG_MODE && length(test_quarters) > DEBUG_ROLL_Q)
   test_quarters <- tail(test_quarters, DEBUG_ROLL_Q)
 
-message(sprintf("    Rolling over %d quarters (%s → %s)",
-                length(test_quarters),
+message(sprintf("    Rolling over %s quarters (%s → %s)",
+                as.character(length(test_quarters)),
                 as.character(min(test_quarters)),
                 as.character(max(test_quarters))))
 
@@ -1158,8 +1158,8 @@ for (dv in names(DEP_VARS)) {
       # Diagnostic on first test quarter if skipping
       if (tq == test_quarters[1L] &&
           (sum(train_idx) < min_train_cat || sum(test_idx) == 0)) {
-        message(sprintf("        [DIAG] %s|%s: train_n=%d (min=%d), test_n=%d",
-                        dv, cat, sum(train_idx), min_train_cat, sum(test_idx)))
+        message(sprintf("        [DIAG] %s|%s: train_n=%s (min=%s), test_n=%s",
+                        dv, cat, as.character(sum(train_idx)), as.character(min_train_cat), as.character(sum(test_idx))))
         y_check <- cat_dt[train_idx][[dv]]
         message(sprintf("        [DIAG] non-NA in dep_var: %s / %s",
                         sum(!is.na(y_check)), length(y_check)))
@@ -1277,8 +1277,8 @@ for (dv in names(DEP_VARS)) {
     n_failed <- sum(fc_dt$method_used == "FAILED", na.rm=TRUE)
     n_na_pred <- sum(!is.na(fc_dt$actual) & is.na(fc_dt$pred_final))
     if (n_failed > 0 || n_na_pred > 0)
-      message(sprintf("        [WARN] %d/%d windows failed, %d had NA predictions",
-                      n_failed, n_total, n_na_pred))
+      message(sprintf("        [WARN] %s/%s windows failed, %s had NA predictions",
+                      as.character(n_failed), as.character(n_total), as.character(n_na_pred)))
     if (nrow(valid) >= 2L) {
       m_met <- reg_metrics(valid$actual, valid$pred_final)
       m_met$dep_var   <- dv
@@ -1290,15 +1290,15 @@ for (dv in names(DEP_VARS)) {
         .r2_msg    <- if (is.finite(m_met$r2_oos)) sprintf("%.3f", m_met$r2_oos) else "NA"
         .tscv_msg  <- { tv <- median(fc_dt$tscv_rmse, na.rm=TRUE)
                         if (is.finite(tv)) sprintf("%.3f", tv) else "NA" }
-        message(sprintf("        RMSE=%s  R²=%s  n=%d  TSCV_RMSE=%s",
-                        .rmse_msg, .r2_msg, m_met$n, .tscv_msg))
+        message(sprintf("        RMSE=%s  R²=%s  n=%s  TSCV_RMSE=%s",
+                        .rmse_msg, .r2_msg, as.character(m_met$n), .tscv_msg))
       }
     } else if (nrow(valid) == 1L) {
       message(sprintf("        only 1 valid pair — RMSE skipped (need >= 2)"))
     } else {
       # Diagnose why all predictions failed
       fail_reasons <- unique(fc_dt$error_msg[!is.na(fc_dt$error_msg)])
-      message(sprintf("        insufficient valid pairs (0/%d)", n_total))
+      message(sprintf("        insufficient valid pairs (0/%s)", as.character(n_total)))
       if (length(fail_reasons) > 0)
         message(sprintf("        failure reasons: %s",
                         paste(head(fail_reasons, 3), collapse=" | ")))
@@ -1494,8 +1494,8 @@ for (dv in names(DEP_VARS)) {
                             !grepl("^(ar|ma|sar|sma)[0-9]+$|intercept|drift|mean",
                                    cd$variable)]
         if (length(macro_in_model) > 0) {
-          cat(sprintf("    In final model (%d): %s\n",
-                      length(macro_in_model),
+          cat(sprintf("    In final model (%s): %s\n",
+                      as.character(length(macro_in_model)),
                       paste(macro_in_model, collapse=", ")))
           # Which are significant?
           macro_sig <- cd[cd$variable %in% macro_in_model & !is.na(cd$p_value) &
@@ -1508,11 +1508,11 @@ for (dv in names(DEP_VARS)) {
             cat(sprintf("    Not significant : %s\n", paste(macro_ns, collapse=", ")))
         } else {
           cat("    No macro variables in final model.\n")
-          cat(sprintf("    Curated macro base vars : %d\n", length(CURATED_MACRO)))
-          cat(sprintf("    Macro feats in FEATS_ALL: %d (incl. transforms)\n",
-                      length(macro_feats)))
+          cat(sprintf("    Curated macro base vars : %s\n", as.character(length(CURATED_MACRO))))
+          cat(sprintf("    Macro feats in FEATS_ALL: %s (incl. transforms)\n",
+                      as.character(length(macro_feats))))
           avail_m <- if (!is.null(last_res$X_train)) length(intersect(macro_feats, colnames(last_res$X_train))) else 0L
-          cat(sprintf("    Macro feats into LASSO  : %d\n", avail_m))
+          cat(sprintf("    Macro feats into LASSO  : %s\n", as.character(avail_m)))
           if (avail_m == 0L) {
             cat("    >>> ALL macro vars dropped by prep_X (missingness/variance filter)\n")
             cat("        Check FRB forward panel coverage for this category.\n")
@@ -1575,9 +1575,9 @@ metrics_all   <- if (length(all_metrics)>0)
 coefs_all     <- if (length(all_coefs)>0)
                    rbindlist(all_coefs, fill=TRUE) else data.table()
 
-message(sprintf("    Forecast rows    : %d", nrow(forecasts_all)))
-message(sprintf("    Metrics rows     : %d", nrow(metrics_all)))
-message(sprintf("    Coefficient rows : %d", nrow(coefs_all)))
+message(sprintf("    Forecast rows    : %s", as.character(nrow(forecasts_all))))
+message(sprintf("    Metrics rows     : %s", as.character(nrow(metrics_all))))
+message(sprintf("    Coefficient rows : %s", as.character(nrow(coefs_all))))
 
 fwrite(forecasts_all, file.path(RESULT_DIR, "forecasts_3b.csv"))
 fwrite(metrics_all,   file.path(RESULT_DIR, "metrics_3b.csv"))
@@ -1758,7 +1758,7 @@ for (key in names(all_fits)) {
 future_fc <- rbindlist(future_rows, fill=TRUE)
 future_fc[, date := zoo::as.yearqtr(as.numeric(date))]
 fwrite(future_fc, file.path(RESULT_DIR, "future_forecast_3b.csv"))
-message(sprintf("    Future forecast rows: %d", nrow(future_fc)))
+message(sprintf("    Future forecast rows: %s", as.character(nrow(future_fc))))
 
 # ════════════════════════════════════════════════════════════
 # 10. PLOTS
@@ -2254,7 +2254,7 @@ arima_base_all <- if (length(arima_base_list) > 0) {
                   } else {
                     data.table()
                   }
-message(sprintf("    Pure ARIMA benchmark: %d models fitted", length(arima_base_list)))
+message(sprintf("    Pure ARIMA benchmark: %s models fitted", as.character(length(arima_base_list))))
 
 # ── Build 7-panel patchwork per series ───────────────────────
 for (sr in names(series_meta_3b)) {
@@ -2939,7 +2939,7 @@ if (pdf_ok14) {
 
       arima_ord <- tryCatch(forecast::arimaorder(fit_ob), error=function(e) NULL)
       ord_str   <- if (!is.null(arima_ord))
-                     sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
+                     sprintf("ARIMA(%s,%s,%s)(%s,%s,%s)[4]",
                              as.integer(arima_ord["p"]), as.integer(arima_ord["d"]),
                              as.integer(arima_ord["q"]), as.integer(arima_ord["P"]),
                              as.integer(arima_ord["D"]), as.integer(arima_ord["Q"]))
@@ -3111,11 +3111,11 @@ if (pdf_ok14) {
         patchwork::plot_annotation(
           title    = sprintf("[%s]  %s  |  %s",
                              type_lbl, dv_lbl, cat_lbl),
-          subtitle = sprintf("%s  |  Adj R²=%s  |  OOS RMSE=%s  |  xreg=%d",
+          subtitle = sprintf("%s  |  Adj R²=%s  |  OOS RMSE=%s  |  xreg=%s",
                              ord_str,
                              if(is.finite(adj_r2_v)) sprintf("%.4f",adj_r2_v) else "NA",
                              if(is.finite(oos_met$rmse)) sprintf("%.4f",oos_met$rmse) else "NA",
-                             n_final_n),
+                             as.character(n_final_n %||% 0L)),
           theme = theme(
             plot.title    = element_text(face="bold", size=13),
             plot.subtitle = element_text(size=9, colour="grey35"))
@@ -3123,13 +3123,13 @@ if (pdf_ok14) {
 
       print(page14)
       pg_count <- pg_count + 1L
-      message(sprintf("    P14: page %d  — %s | %s  [%s]",
+      message(sprintf("    P14: page %s  — %s | %s  [%s]",
                       pg_count, dv_lbl, cat_lbl, type_lbl))
     }
   }
 
   grDevices::dev.off()
-  message(sprintf("    Saved: %s  (%d pages)", basename(p14_path), pg_count))
+  message(sprintf("    Saved: %s  (%s pages)", basename(p14_path), as.character(pg_count)))
 
 } else {
   message("    [SKIP] P14 — no valid fits found")
@@ -3294,9 +3294,9 @@ if (pdf_ok15) {
       arima_lbl  <- if (!is.null(all_fits[[key]]$fit)) {
                       tryCatch({
                         ord <- forecast::arimaorder(all_fits[[key]]$fit)
-                        sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
-                                ord["p"],ord["d"],ord["q"],
-                                ord["P"],ord["D"],ord["Q"])
+                        sprintf("ARIMA(%s,%s,%s)(%s,%s,%s)[4]",
+                                as.character(.si3(ord["p"])),as.character(.si3(ord["d"])),as.character(.si3(ord["q"])),
+                         as.character(.si3(ord["P"])),as.character(.si3(ord["D"])),as.character(.si3(ord["Q"])))
                       }, error=function(e) "ARIMA(?)")
                     } else { "ARIMA(?)" }
 
@@ -3437,7 +3437,7 @@ if (nrow(arima_base_all) == 0) {
 
 
 message("\n[12] Done. All outputs in results_3b/ and plots_3b/")
-message(sprintf("    %d models  |  %d forecast rows  |  %d future rows",
+message(sprintf("    %s models  |  %s forecast rows  |  %s future rows",
                 length(all_fits), nrow(forecasts_all), nrow(future_fc)))
 message(paste("    Plots:",
               "P1-P8 (diagnostics) |",
