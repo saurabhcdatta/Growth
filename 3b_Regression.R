@@ -1617,7 +1617,7 @@ for (key in names(all_fits)) {
 
   if (is.null(fit) || !inherits(fit, c("ARIMA","Arima"))) next
 
-  last_obs <- max(qtrly[cat_label==cat_lbl, date], na.rm=TRUE)
+  last_obs <- as.numeric(max(qtrly[cat_label==cat_lbl, date], na.rm=TRUE))
   fc_qtrs  <- seq(last_obs+0.25, FC_END, by=0.25)
   fc_qtrs  <- fc_qtrs[fc_qtrs > last_obs & fc_qtrs <= FC_END]
   if (length(fc_qtrs) == 0L) next
@@ -1639,7 +1639,7 @@ for (key in names(all_fits)) {
     mat <- matrix(NA_real_, nrow=h_steps, ncol=length(sv),
                   dimnames=list(NULL, sv))
     for (i in seq_along(fc_qtrs)) {
-      fq_yqtr <- zoo::as.yearqtr(fc_qtrs[i])
+      fq_yqtr <- as.numeric(fc_qtrs[i])
       fwd_row <- qtrly[cat_label==cat_lbl & date==fq_yqtr]
       for (v in sv) {
         # Exit variables always set to zero — future rates unknown
@@ -1681,7 +1681,7 @@ for (key in names(all_fits)) {
   running_level <- last_level
 
   for (i in seq_along(fc_qtrs)) {
-    fq_yqtr <- zoo::as.yearqtr(fc_qtrs[i])
+    fq_yqtr <- as.numeric(fc_qtrs[i])
     pred_lv  <- yoy_to_level(fc_mean[i], running_level)
     pred_lo  <- yoy_to_level(fc_lo[i],   running_level)
     pred_hi  <- yoy_to_level(fc_hi[i],   running_level)
