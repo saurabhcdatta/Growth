@@ -573,11 +573,12 @@ build_coef_dt <- function(fit, n_obs, sig_vars = character(0)) {
   # Return a single informative row so the screen print is never blank.
   if (length(cf_all) == 0L) {
     ord <- tryCatch(forecast::arimaorder(fit), error=function(e) NULL)
-    ord_str <- if (!is.null(ord))
+    ord_str <- if (!is.null(ord)) {
+                 .si <- function(x) if(!is.null(x)&&is.finite(x)) as.integer(x) else 0L
                  sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
-                         ord["p"],ord["d"],ord["q"],
-                         ord["P"],ord["D"],ord["Q"])
-               else "ARIMA(0,d,0)"
+                         .si(ord["p"]),.si(ord["d"]),.si(ord["q"]),
+                         .si(ord["P"]),.si(ord["D"]),.si(ord["Q"]))
+               } else "ARIMA(0,d,0)"
     # Compute sigma² (variance of residuals) as the single "coefficient"
     resid_v <- tryCatch(as.numeric(residuals(fit)), error=function(e) NULL)
     sigma2  <- if (!is.null(resid_v)) var(resid_v, na.rm=TRUE) else NA_real_
@@ -599,7 +600,9 @@ build_coef_dt <- function(fit, n_obs, sig_vars = character(0)) {
 
   n_df    <- max(n_obs - length(cf_all), 1L)
   cf_tval <- cf_all / cf_se_v
-  cf_pval <- 2 * pt(-abs(cf_tval), df=n_df)
+  cf_tval[!is.finite(cf_tval)] <- NA_real_
+  cf_pval <- suppressWarnings(2 * pt(-abs(cf_tval), df=n_df))
+  cf_pval[!is.finite(cf_pval)] <- NA_real_
 
   dt <- data.table(
     variable = names(cf_all),
@@ -884,12 +887,15 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
 
     cur_vars  <- setdiff(cur_vars, best_drop)
     best_rmse <- best_new_rmse
-    message(sprintf("        [TSCV ELIM iter %d] dropped '%s'  RMSE=%.4f  vars=%d",
-                    iter, best_drop, best_rmse, length(cur_vars)))
+    message(sprintf("        [TSCV ELIM iter %s] dropped '%s'  RMSE=%s  vars=%s",
+                    as.character(iter), best_drop,
+                    if(is.finite(best_rmse)) sprintf("%.4f",best_rmse) else "NA",
+                    as.character(length(cur_vars))))
   }
 
-  message(sprintf("        [TSCV ELIM] final: %d vars, TSCV RMSE=%.4f",
-                  length(cur_vars), best_rmse))
+  message(sprintf("        [TSCV ELIM] final: %s vars, TSCV RMSE=%s",
+                  as.character(length(cur_vars)),
+                  if(is.finite(best_rmse)) sprintf("%.4f",best_rmse) else "NA"))
 
   # ── Step 4: Final ARIMAX on full training window ──────────
   res_final <- refit_fn(cur_vars)
@@ -1155,7 +1161,7 @@ for (dv in names(DEP_VARS)) {
         message(sprintf("        [DIAG] %s|%s: train_n=%d (min=%d), test_n=%d",
                         dv, cat, sum(train_idx), min_train_cat, sum(test_idx)))
         y_check <- cat_dt[train_idx][[dv]]
-        message(sprintf("        [DIAG] non-NA in dep_var: %d / %d",
+        message(sprintf("        [DIAG] non-NA in dep_var: %s / %s",
                         sum(!is.na(y_check)), length(y_check)))
       }
 
@@ -1339,20 +1345,28 @@ for (dv in names(DEP_VARS)) {
       # ── Header ───────────────────────────────────────────────
       cat(sprintf("\n%s\n", strrep("=", 80)))
       cat(sprintf("  MODEL %02d/%02d  |  %s  |  %s\n",
-                  model_id, length(DEP_VARS)*length(cats), dv_label, cat))
+                  as.integer(model_id),
+                  as.integer(length(DEP_VARS)*length(cats)),
+                  dv_label, cat))
       cat(sprintf("%s\n", strrep("=", 80)))
       if (is_pure_arima) {
         cat(sprintf("  *** PURE ARIMA (no xreg survived)  Reason: %s ***\n",
                     last_res$method_used %||% "unknown"))
       }
-      cat(sprintf("  ARIMA order : ARIMA(%d,%d,%d)(%d,%d,%d)[4]  Method: %s\n",
-                  last_res$arima_order["p"], last_res$arima_order["d"],
-                  last_res$arima_order["q"],
-                  last_res$arima_order["P"], last_res$arima_order["D"],
-                  last_res$arima_order["Q"],
-                  last_res$method_used))
-      cat(sprintf("  LASSO sel.  : %d vars  ->  Final xreg: %d vars\n",
-                  last_res$n_lasso_sel %||% 0L, last_res$n_final %||% 0L))
+      {
+        .ao <- last_res$arima_order
+        .safe_i <- function(x) if (!is.null(x) && is.finite(x)) as.integer(x) else NA_integer_
+        .p <- .safe_i(.ao["p"]); .d <- .safe_i(.ao["d"]); .q <- .safe_i(.ao["q"])
+        .P <- .safe_i(.ao["P"]); .D <- .safe_i(.ao["D"]); .Q <- .safe_i(.ao["Q"])
+        cat(sprintf("  ARIMA order : ARIMA(%s,%s,%s)(%s,%s,%s)[4]  Method: %s\n",
+                    if(!is.na(.p)) .p else "?", if(!is.na(.d)) .d else "?",
+                    if(!is.na(.q)) .q else "?", if(!is.na(.P)) .P else "?",
+                    if(!is.na(.D)) .D else "?", if(!is.na(.Q)) .Q else "?",
+                    last_res$method_used %||% "unknown"))
+      }
+      cat(sprintf("  LASSO sel.  : %s vars  ->  Final xreg: %s vars\n",
+                  as.character(last_res$n_lasso_sel %||% 0L),
+                  as.character(last_res$n_final %||% 0L)))
       {
         .tr <- last_res$tscv_rmse %||% NA_real_
         .ar <- last_res$adj_r2    %||% NA_real_
@@ -1412,8 +1426,11 @@ for (dv in names(DEP_VARS)) {
         }
         cat(sprintf("  %s\n", strrep("-", 74)))
         cat("  Signif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n")
-        cat(sprintf("  Adjusted R-squared: %.4f  (in-sample, full training window)\n",
-                    last_res$adj_r2 %||% NA_real_))
+        {
+          .adj <- last_res$adj_r2 %||% NA_real_
+          cat(sprintf("  Adjusted R-squared: %s  (in-sample, full training window)\n",
+                      if (is.finite(.adj)) sprintf("%.4f", .adj) else "NA"))
+        }
       } else {
         cat("  [WARN] Coefficient table is empty — fit object may be NULL\n")
       }
@@ -1452,11 +1469,16 @@ for (dv in names(DEP_VARS)) {
             sign_ok <- prior == 0L ||
                        (prior == -1L && cf_ev < 0) ||
                        (prior ==  1L && cf_ev > 0)
-            cat(sprintf("    %-28s  est=%+.4f  p=%.4f  sign=%s  sig=%s\n",
-                        ev, cf_ev, pv_ev %||% NA_real_,
-                        if (sign_ok) "OK (correct)" else "WRONG",
-                        if (is.finite(pv_ev %||% NA_real_) &&
-                            (pv_ev %||% 1) < SIG_LEVEL) "sig" else "n.s."))
+            {
+              .pv <- pv_ev %||% NA_real_
+              .cf <- if (is.finite(cf_ev)) cf_ev else NA_real_
+              cat(sprintf("    %-28s  est=%s  p=%s  sign=%s  sig=%s\n",
+                          ev,
+                          if (is.finite(.cf)) sprintf("%+.4f", .cf) else "NA",
+                          if (is.finite(.pv)) sprintf("%.4f",  .pv) else "NA",
+                          if (sign_ok) "OK (correct)" else "WRONG",
+                          if (is.finite(.pv) && .pv < SIG_LEVEL) "sig" else "n.s."))
+            }
           }
         }
       }
@@ -1509,7 +1531,8 @@ for (dv in names(DEP_VARS)) {
 
       # ── OOS performance note ──────────────────────────────────
       if (nrow(valid) >= 2L) {
-        cat(sprintf("\n  OOS PERFORMANCE (n=%d quarters):\n", m_met$n))
+        cat(sprintf("\n  OOS PERFORMANCE (n=%s quarters):\n",
+                    as.character(m_met$n %||% 0L)))
         safe_f <- function(x) if (is.finite(x)) sprintf("%.4f", x) else "NA"
         cat(sprintf("    RMSE=%s  MAE=%s  OOS R²=%s\n",
                     safe_f(m_met$rmse), safe_f(m_met$mae), safe_f(m_met$r2_oos)))
@@ -3012,7 +3035,8 @@ if (pdf_ok14) {
       }
 
       coef_title <- if (is_pure) "Coefficients (Pure ARIMA)" else
-                    sprintf("Coefficients (ARIMAX-TSCV,  %d xreg)", n_final_n)
+                    sprintf("Coefficients (ARIMAX-TSCV,  %s xreg)",
+                                   as.character(n_final_n %||% 0L))
 
       p2 <- ggplot(data.frame(x=0,y=0), aes(x,y)) +
         annotate("text", x=0.02, y=0.97, label=coef_body,
@@ -3056,14 +3080,14 @@ if (pdf_ok14) {
         sprintf("Method : %s\n",            method_lbl),
         sprintf("N train: %s\n",
                 if (!is.na(n_tr)) as.character(n_tr) else "?"),
-        sprintf("xreg   : %d var(s)\n\n",   n_final_n),
+        sprintf("xreg   : %s var(s)\n\n",   as.character(n_final_n %||% 0L)),
         sprintf("In-sample Adj R2 : %s\n",
                 if(is.finite(adj_r2_v)) sprintf("%.4f", adj_r2_v) else "NA"),
         sprintf("AIC              : %s\n",
                 if(is.finite(aic_v))   sprintf("%.2f",  aic_v)    else "NA"),
         sprintf("TSCV RMSE (med)  : %s\n\n",
                 if(is.finite(tscv_med)) sprintf("%.4f", tscv_med)  else "NA"),
-        sprintf("OOS n    : %d quarters\n", oos_met$n),
+        sprintf("OOS n    : %s quarters\n", as.character(oos_met$n %||% 0L)),
         sprintf("OOS RMSE : %s\n",
                 if(is.finite(oos_met$rmse))   sprintf("%.4f", oos_met$rmse)   else "NA"),
         sprintf("OOS MAE  : %s\n",
