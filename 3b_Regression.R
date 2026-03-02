@@ -1746,7 +1746,7 @@ for (dv in names(DEP_VARS)) {
     facet_wrap(~cat_label, scales="free_y", ncol=3) +
     scale_colour_manual(values=c("Actual"="black","Predicted"="steelblue"),
                         name="") +
-    scale_x_continuous(breaks=pretty(fc_dv$date_num, n=5),
+    scale_x_continuous(breaks=.safe_breaks(fc_dv$date_num, n=5),
                        labels=function(x) as.character(zoo::as.yearqtr(x))) +
     labs(title=sprintf("Actual vs Predicted — %s", DEP_VARS[[dv]]$label),
          subtitle="Shaded: 95% CI  |  ARIMAX with TSCV variable selection",
@@ -1809,7 +1809,7 @@ for (dv in names(DEP_VARS)) {
     geom_point(colour="steelblue", alpha=0.7, size=1.8) +
     geom_smooth(method="loess", se=FALSE, colour="firebrick", linewidth=0.8) +
     facet_wrap(~cat_label, scales="free_y", ncol=3) +
-    scale_x_continuous(breaks=pretty(fc_dv$date_num, n=4),
+    scale_x_continuous(breaks=.safe_breaks(fc_dv$date_num, n=4),
                        labels=function(x) as.character(zoo::as.yearqtr(x))) +
     labs(title=sprintf("OOS Residuals — %s", DEP_VARS[[dv]]$label),
          subtitle="Red line: loess trend (should be flat near zero)",
@@ -1830,7 +1830,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
     geom_line(aes(y=pred_level,   colour="Predicted"), linewidth=0.8, linetype="dashed") +
     facet_wrap(~cat_label, scales="free_y", ncol=3) +
     scale_colour_manual(values=c("Actual"="black","Predicted"="steelblue"), name="") +
-    scale_x_continuous(breaks=pretty(lv_ser$date_num, n=4),
+    scale_x_continuous(breaks=.safe_breaks(lv_ser$date_num, n=4),
                        labels=function(x) as.character(zoo::as.yearqtr(x))) +
     scale_y_continuous(labels=comma) +
     labs(title=sprintf("Level Forecast — %s", toupper(gsub("_count","",ser))),
@@ -1866,7 +1866,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
     facet_wrap(~cat_label, scales="free_y", ncol=3) +
     scale_colour_manual(values=c("Historical"="black","Forecast"="steelblue"),
                         name="") +
-    scale_x_continuous(breaks=pretty(c(hist_lv$date_num, fut_ser$date_num), n=6),
+    scale_x_continuous(breaks=.safe_breaks(c(hist_lv$date_num, fut_ser$date_num), n=6),
                        labels=function(x) as.character(zoo::as.yearqtr(x))) +
     scale_y_continuous(labels=comma) +
     geom_vline(xintercept=as.numeric(max(hist_lv$date)), linetype="dotted",
@@ -1903,7 +1903,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
               linewidth=1.1, linetype="dashed") +
     scale_colour_manual(values=c("Historical"="black","Forecast"="steelblue"),
                         name="") +
-    scale_x_continuous(breaks=pretty(c(hist_tot$date_num,fut_tot$date_num),n=6),
+    scale_x_continuous(breaks=.safe_breaks(c(hist_tot$date_num,fut_tot$date_num), n=6),
                        labels=function(x) as.character(zoo::as.yearqtr(x))) +
     scale_y_continuous(labels=comma) +
     geom_vline(xintercept=as.numeric(max(hist_tot$date)), linetype="dotted",
@@ -2800,7 +2800,7 @@ if (nrow(arima_oos_all) > 0 && nrow(forecasts_all) > 0) {
                                           "ARIMAX-TSCV"="solid"), name="") +
           scale_x_continuous(
             labels=function(x) as.character(zoo::as.yearqtr(x)),
-            breaks=pretty(ts_dt$date_num, n=5)) +
+            breaks=.safe_breaks(ts_dt$date_num, n=5)) +
           labs(title="Time Series: Actual vs Both Models",
                x="Quarter", y="YoY %") +
           theme_cu
@@ -2942,7 +2942,7 @@ if (pdf_ok14) {
           name="") +
         scale_x_continuous(
           labels=function(x) as.character(zoo::as.yearqtr(x)),
-          breaks=pretty(combo$date, n=6)) +
+          breaks=.safe_breaks(combo$date, n=6)) +
         labs(title="Actual vs Fitted (in-sample) + OOS Forecast",
              x=NULL, y="YoY %") +
         theme_cu + theme(legend.position="bottom")
@@ -3025,7 +3025,7 @@ if (pdf_ok14) {
                       linewidth=0.8, span=0.5, na.rm=TRUE) +
           scale_x_continuous(
             labels=function(x) as.character(zoo::as.yearqtr(x)),
-            breaks=pretty(r_dt$date, n=6)) +
+            breaks=.safe_breaks(r_dt$date, n=6)) +
           labs(title="Residuals over time  (orange = loess)",
                subtitle="Flat near zero = well-specified | Trend = misspecification",
                x=NULL, y="Residual") +
@@ -3198,21 +3198,21 @@ if (pdf_ok15) {
         geom_line(colour="#333333", linewidth=0.8) +
         geom_hline(yintercept=0, linetype="dotted", colour="grey60") +
         labs(title="Observed  (raw YoY %)", y="YoY %") +
-        scale_x_continuous(labels=fmt_x, breaks=pretty(d_v, n=7)) +
+        scale_x_continuous(labels=fmt_x, breaks=.safe_breaks(d_v, n=7)) +
         theme_decomp
 
       p_trend <- ggplot(stl_dt, aes(x=date, y=trend)) +
         geom_line(colour="#1a6faf", linewidth=0.9) +
         geom_hline(yintercept=0, linetype="dotted", colour="grey60") +
         labs(title="Trend  (STL loess)", y="YoY %") +
-        scale_x_continuous(labels=fmt_x, breaks=pretty(d_v, n=7)) +
+        scale_x_continuous(labels=fmt_x, breaks=.safe_breaks(d_v, n=7)) +
         theme_decomp
 
       p_seas <- ggplot(stl_dt, aes(x=date, y=seasonal)) +
         geom_line(colour="#2ca02c", linewidth=0.8) +
         geom_hline(yintercept=0, linetype="dotted", colour="grey60") +
         labs(title="Seasonal  (within-year pattern)", y="Seasonal") +
-        scale_x_continuous(labels=fmt_x, breaks=pretty(d_v, n=7)) +
+        scale_x_continuous(labels=fmt_x, breaks=.safe_breaks(d_v, n=7)) +
         theme_decomp
 
       # Cyclical panel — HP cycle if available, else STL remainder
@@ -3223,7 +3223,7 @@ if (pdf_ok15) {
                       fill="#d6470e", alpha=0.15) +
           geom_hline(yintercept=0, linetype="dotted", colour="grey60") +
           labs(title="Cyclical  (HP filter, lambda=1600)", y="Cycle") +
-          scale_x_continuous(labels=fmt_x, breaks=pretty(d_v, n=7)) +
+          scale_x_continuous(labels=fmt_x, breaks=.safe_breaks(d_v, n=7)) +
           theme_decomp
       } else {
         p_cycle <- ggplot() + labs(title="Cyclical (HP filter unavailable)") + theme_cu
@@ -3235,7 +3235,7 @@ if (pdf_ok15) {
                      alpha=0.7) +
         geom_point(colour="#9467bd", size=1.5, alpha=0.8) +
         labs(title="Irregular  (STL remainder after trend + seasonal)", y="Remainder") +
-        scale_x_continuous(labels=fmt_x, breaks=pretty(d_v, n=7)) +
+        scale_x_continuous(labels=fmt_x, breaks=.safe_breaks(d_v, n=7)) +
         theme_decomp
 
       # ── Variance shares ────────────────────────────────────
