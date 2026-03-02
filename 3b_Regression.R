@@ -111,6 +111,17 @@ required <- c("date","categories","cat_label","yoy_ficu_assets_pct","yoy_fiscu_a
 miss <- setdiff(required, names(qtrly))
 if (length(miss) > 0) stop("Missing columns: ", paste(miss, collapse=", "))
 
+# Cast date to numeric (avoids yearqtr/closure collision in data.table)
+if (inherits(qtrly$date, "yearqtr"))
+  qtrly[, date := as.numeric(date)]
+
+# Guard dep var columns: replace Inf / NaN with NA before any modelling
+for (.dc in c("yoy_ficu_assets_pct","yoy_fiscu_assets_pct")) {
+  if (.dc %in% names(qtrly))
+    qtrly[!is.finite(get(.dc)), (.dc) := NA_real_]
+}
+rm(.dc)
+
 setorderv(qtrly, c("categories","date"))
 all_quarters <- sort(unique(qtrly$date))
 cats         <- sort(unique(qtrly$cat_label))
@@ -400,16 +411,21 @@ yoy_to_level <- function(yoy_pct, anchor) {
 
 # OOS metrics
 reg_metrics <- function(actual, pred) {
-  ok  <- !is.na(actual) & !is.na(pred)
+  ok  <- !is.na(actual) & !is.na(pred) & is.finite(actual) & is.finite(pred)
   a   <- actual[ok]; p <- pred[ok]
   n   <- sum(ok)
-  if (n < 2) return(list(rmse=NA,mae=NA,mape=NA,r2_oos=NA,n=n))
+  if (n < 2) return(list(rmse=NA_real_,mae=NA_real_,mape=NA_real_,r2_oos=NA_real_,n=n))
   rmse  <- sqrt(mean((a-p)^2))
   mae   <- mean(abs(a-p))
   mape  <- mean(abs((a-p)/a)*100, na.rm=TRUE)
   ss_r  <- sum((a-p)^2)
   ss_t  <- sum((a-mean(a))^2)
   r2    <- if (ss_t>0) 1-ss_r/ss_t else NA_real_
+  # Guard: clamp to finite or NA
+  rmse  <- if (is.finite(rmse))  rmse  else NA_real_
+  mae   <- if (is.finite(mae))   mae   else NA_real_
+  mape  <- if (is.finite(mape))  mape  else NA_real_
+  r2    <- if (is.finite(r2))    r2    else NA_real_
   list(rmse=rmse, mae=mae, mape=mape, r2_oos=r2, n=n)
 }
 
@@ -1263,9 +1279,14 @@ for (dv in names(DEP_VARS)) {
       m_met$dv_label  <- dv_label
       m_met$cat_label <- cat
       all_metrics[[paste(dv, cat, sep="|")]] <- m_met
-      message(sprintf("        RMSE=%.3f  R²=%.3f  n=%d  TSCV_RMSE=%.3f",
-                      m_met$rmse, m_met$r2_oos, m_met$n,
-                      median(fc_dt$tscv_rmse, na.rm=TRUE)))
+      {
+        .rmse_msg  <- if (is.finite(m_met$rmse))   sprintf("%.3f", m_met$rmse)   else "NA"
+        .r2_msg    <- if (is.finite(m_met$r2_oos)) sprintf("%.3f", m_met$r2_oos) else "NA"
+        .tscv_msg  <- { tv <- median(fc_dt$tscv_rmse, na.rm=TRUE)
+                        if (is.finite(tv)) sprintf("%.3f", tv) else "NA" }
+        message(sprintf("        RMSE=%s  R²=%s  n=%d  TSCV_RMSE=%s",
+                        .rmse_msg, .r2_msg, m_met$n, .tscv_msg))
+      }
     } else if (nrow(valid) == 1L) {
       message(sprintf("        only 1 valid pair — RMSE skipped (need >= 2)"))
     } else {
@@ -1332,8 +1353,13 @@ for (dv in names(DEP_VARS)) {
                   last_res$method_used))
       cat(sprintf("  LASSO sel.  : %d vars  ->  Final xreg: %d vars\n",
                   last_res$n_lasso_sel %||% 0L, last_res$n_final %||% 0L))
-      cat(sprintf("  TSCV RMSE   : %.4f  |  In-sample Adj R2: %.4f\n",
-                  last_res$tscv_rmse %||% NA_real_, last_res$adj_r2 %||% NA_real_))
+      {
+        .tr <- last_res$tscv_rmse %||% NA_real_
+        .ar <- last_res$adj_r2    %||% NA_real_
+        cat(sprintf("  TSCV RMSE   : %s  |  In-sample Adj R2: %s\n",
+                    if (is.finite(.tr)) sprintf("%.4f", .tr) else "NA",
+                    if (is.finite(.ar)) sprintf("%.4f", .ar) else "NA"))
+      }
 
       # ── Coefficient table ─────────────────────────────────────
       # Always prints — for pure ARIMA shows AR/MA/seasonal/drift terms
@@ -1355,9 +1381,9 @@ for (dv in names(DEP_VARS)) {
                        grepl("^\\[ARIMA", r$variable))
           if (is_meta) {
             if (r$variable == "sigma2") {
-              cat(sprintf("  %-28s %12.6f   (residual variance)\n",
+              cat(sprintf("  %-28s %s   (residual variance)\n",
                           r$variable,
-                          if (is.finite(r$estimate)) r$estimate else NA_real_))
+                          if (is.finite(r$estimate)) sprintf("%12.6f", r$estimate) else "          NA"))
             } else {
               cat(sprintf("  %s\n", r$variable))
             }
@@ -1375,12 +1401,13 @@ for (dv in names(DEP_VARS)) {
                    if (grepl("^(ar|ma|sar|sma)[0-9]+$|^(intercept|drift|mean)$",
                               r$variable, ignore.case=TRUE, perl=TRUE)) "[ARIMA]" else
                    if (r$variable == "sigma2") "" else "[MACRO]"
-          cat(sprintf("  %-28s %12.6f %11.6f %8.3f %11.6f %s  %s\n",
+          fmt_num <- function(x, fmt) if (is.finite(x)) sprintf(fmt, x) else "        NA"
+          cat(sprintf("  %-28s %12s %11s %8s %11s %s  %s\n",
                       r$variable,
-                      if (is.finite(r$estimate)) r$estimate else NA_real_,
-                      if (is.finite(r$std_err))  r$std_err  else NA_real_,
-                      if (is.finite(r$t_stat))   r$t_stat   else NA_real_,
-                      if (is.finite(r$p_value))  r$p_value  else NA_real_,
+                      fmt_num(r$estimate, "%12.6f"),
+                      fmt_num(r$std_err,  "%11.6f"),
+                      fmt_num(r$t_stat,   "%8.3f"),
+                      fmt_num(r$p_value,  "%11.6f"),
                       stars, vtype))
         }
         cat(sprintf("  %s\n", strrep("-", 74)))
@@ -1483,8 +1510,9 @@ for (dv in names(DEP_VARS)) {
       # ── OOS performance note ──────────────────────────────────
       if (nrow(valid) >= 2L) {
         cat(sprintf("\n  OOS PERFORMANCE (n=%d quarters):\n", m_met$n))
-        cat(sprintf("    RMSE=%.4f  MAE=%.4f  OOS R²=%.4f\n",
-                    m_met$rmse, m_met$mae, m_met$r2_oos))
+        safe_f <- function(x) if (is.finite(x)) sprintf("%.4f", x) else "NA"
+        cat(sprintf("    RMSE=%s  MAE=%s  OOS R²=%s\n",
+                    safe_f(m_met$rmse), safe_f(m_met$mae), safe_f(m_met$r2_oos)))
         perf_note <- dplyr::case_when(
           isTRUE(m_met$r2_oos > 0.5)  ~ "  -> Good: model explains >50% of OOS variance",
           isTRUE(m_met$r2_oos > 0.2)  ~ "  -> Moderate: ARIMA dynamics dominant, macro adds limited lift",
