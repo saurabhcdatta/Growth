@@ -1,16 +1,16 @@
 ############################################################
 # PART 3b — FICU & FISCU TOTAL ASSETS FORECASTING
 #
-# Targets  : yoy_ficu_assets_pct  (YoY % change in FICU total assets)
-#             yoy_fiscu_assets_pct (YoY % change in FISCU total assets)
+# Targets  : yoy_ficu_assets_pct  (YoY % change in FICU total assets by category)
+#             yoy_fiscu_assets_pct (YoY % change in FISCU total assets by category)
 #             7 asset-size categories each → 14 models total
 #
 # Theory   : CU total assets grow through deposit inflows, loan
-#             origination, and investment activity — all driven by
+#             origination, and investment activity, all driven by
 #             macroeconomic conditions (interest rates, credit spreads,
-#             unemployment, GDP growth). Exit dynamics (mergers,
-#             acquisitions) reallocate assets across size buckets
-#             and are included as controls.
+#             unemployment, GDP growth, etc.). Exit dynamics (mergers,
+#             liquidations) reallocate assets across size buckets and
+#             are included as controls.
 #
 # Features : FRB Baseline 2026 macro variables only +
 #             merger_rate, liquid_rate, acquisition_rate (CU exits)
@@ -28,7 +28,7 @@
 #               Exit vars set to 0; macro from FRB forward panel
 #
 # Outputs  : results_3b/  (forecasts, metrics, coefficients CSVs)
-#            plots_3b/     (PDF plots — same set as Part 3a)
+#            plots_3b/     (PDF plots)
 #
 # Reads    : qtrly_enriched_v3.rds  (from macro_v4_frb.R)
 ############################################################
@@ -63,7 +63,7 @@ DEBUG_MODE    <- TRUE    # FALSE for full production run
 DEBUG_ROLL_Q  <- 6       # quarters to use in debug mode
 
 # Rolling window: first test quarter
-TRAIN_END  <- as.numeric(zoo::as.yearqtr("2021 Q1"))  # 2021.00 — numeric avoids yearqtr/closure collision in data.table
+TRAIN_END  <- as.numeric(zoo::as.yearqtr("2021 Q1"))  # numeric avoids yearqtr/closure collision
 
 # TSCV settings
 TSCV_MIN_TRAIN        <- 12L   # minimum obs for standard categories
@@ -79,10 +79,10 @@ MAX_XREG_VARS  <- 10L    # top N by LASSO magnitude passed to ARIMAX
 SIG_LEVEL      <- 0.10   # p-value threshold for final model print
 
 # Forecast horizon
-FC_END <- as.numeric(zoo::as.yearqtr("2030 Q4"))  # 2030.75
+FC_END <- as.numeric(zoo::as.yearqtr("2030 Q4"))
 
 # YoY% clamp — hard ceiling on per-quarter forecast
-YOY_CAP <- 25.0          # ±25% per quarter (assets swing wider than counts)
+YOY_CAP <- 25.0          # ±25% — assets swing wider than counts
 
 setwd(DATA_DIR)
 dir.create(PLOT_DIR,   showWarnings = FALSE, recursive = TRUE)
@@ -319,7 +319,8 @@ exit_feats <- unique(c(exit_feats,
 FEATS_ALL <- unique(c(macro_feats, exit_feats))
 
 # Hard exclusions — targets themselves and any ficu/fiscu leakage
-HARD_EXCL <- c("yoy_ficu_pct","yoy_fiscu_pct","yoy_assets_pct",
+HARD_EXCL <- c("yoy_ficu_assets_pct","yoy_fiscu_assets_pct",
+               "yoy_ficu_pct","yoy_fiscu_pct","yoy_assets_pct",
                "qoq_ficu_pct","qoq_fiscu_pct",
                "yoy_ficu_count","yoy_fiscu_count",
                "qoq_ficu_count","qoq_fiscu_count",
@@ -535,7 +536,7 @@ tscv_rmse <- function(y_ts, xreg_mat, arima_ord, has_seas,
   sqrt(mean(errs))
 }
 
-# ── Exit variable sign priors (GLOBAL — used in fit_window_3b and screen print) ──
+# ── Exit variable sign priors (GLOBAL — used in fit_window_3a and screen print) ──
 # -1 = must be negative, +1 = must be positive, 0 = no restriction
 # Drop condition: wrong sign AND insignificant (both must be true)
 EXIT_SIGN_PRIOR <- c(
@@ -617,7 +618,7 @@ compute_adj_r2 <- function(fit, y_vec) {
   }
 }
 
-fit_window_3b <- function(train_dt, test_row, dep_var, feats,
+fit_window_3a <- function(train_dt, test_row, dep_var, feats,
                           min_obs = TSCV_MIN_TRAIN) {
 
   y_train <- train_dt[[dep_var]]
@@ -921,7 +922,7 @@ fit_window_3b <- function(train_dt, test_row, dep_var, feats,
   # the model is refit without it.  This enforces economic logic
   # and avoids spurious coefficients contaminating forecasts.
   # ─────────────────────────────────────────────────────────────
-  # EXIT_SIGN_PRIOR is defined globally above fit_window_3b
+  # EXIT_SIGN_PRIOR is defined globally above fit_window_3a
 
   check_exit_signs <- function(fit, vars, n_obs) {
     if (length(vars) == 0L || is.null(fit)) return(vars)
@@ -1147,7 +1148,7 @@ for (dv in names(DEP_VARS)) {
       train_dt <- cat_dt[train_idx]
       test_row  <- cat_dt[test_idx][1L]
 
-      res <- fit_window_3b(train_dt, test_row, dv, feats_dv,
+      res <- fit_window_3a(train_dt, test_row, dv, feats_dv,
                            min_obs = min_train_cat)
       # Track last_res as the most recent SUCCESSFUL result for screen print.
       # Failed windows (ok=FALSE) are skipped so the print always reflects
@@ -1823,7 +1824,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
     scale_y_continuous(labels=comma) +
     labs(title=sprintf("Level Forecast — %s", toupper(gsub("_count","",ser))),
          subtitle="Back-transformed from YoY%  |  95% CI shaded",
-         x="Quarter", y="Count") +
+         x="Quarter", y="Total Assets ($)") +
     theme_cu
   save_plot(p, sprintf("P5_%s_level.pdf", ser), w=14, h=9)
 }
@@ -1862,7 +1863,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
     labs(title=sprintf("Future Forecast 2025–2030 — %s",
                        toupper(gsub("_count","",ser))),
          subtitle="Exit vars set to zero  |  Macro from FRB Baseline  |  95% CI shaded",
-         x="Quarter", y="Count") +
+         x="Quarter", y="Total Assets ($)") +
     theme_cu
   save_plot(p, sprintf("P6_%s_future.pdf", ser), w=16, h=10)
 }
@@ -1899,7 +1900,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
     labs(title=sprintf("System Total Forecast 2025–2030 — %s",
                        toupper(gsub("_count","",ser))),
          subtitle="Sum across all asset-size categories  |  95% CI shaded",
-         x="Quarter", y="Total Count") +
+         x="Quarter", y="Total Assets ($)") +
     theme_cu
   save_plot(p, sprintf("P7_%s_system_total.pdf", ser), w=12, h=7)
 }
@@ -1946,7 +1947,7 @@ LTY_CYCLE <- c("solid","dashed","dotdash","longdash",
                 "twodash","solid","dashed")
 names(LTY_CYCLE) <- names(CAT_COLOURS)
 
-policy_theme_3b <- function() {
+policy_theme_3a <- function() {
   theme_bw(base_size = 12) +
   theme(
     strip.background = element_blank(),
@@ -2071,9 +2072,9 @@ make_policy_chart_3b <- function(count_col, title_text, stem) {
         "\nExit vars set to zero in future horizon. 7 NCUA asset-size categories.",
         "Source: NCUA Call Reports."
       ),
-      x = NULL, y = "Count"
+      x = NULL, y = "Total Assets ($)"
     ) +
-    policy_theme_3b() +
+    policy_theme_3a() +
     guides(colour   = guide_legend(nrow = 2, byrow = TRUE),
            linetype = guide_legend(nrow = 2, byrow = TRUE))
 
