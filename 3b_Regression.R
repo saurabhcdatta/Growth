@@ -5,13 +5,6 @@
 #             yoy_fiscu_assets_pct (YoY % change in FISCU total assets)
 #             7 asset-size categories each → 14 models total
 #
-# Theory   : CU total assets grow through deposit inflows, loan
-#             origination, and investment activity — all driven by
-#             macroeconomic conditions (interest rates, credit spreads,
-#             unemployment, GDP growth). Exit dynamics (mergers,
-#             acquisitions) reallocate assets across size buckets
-#             and are included as controls.
-#
 # Method   : 1. auto.arima() on training series → fixes ARIMA order
 #            2. TSCV with expanding window to select best xreg subset:
 #               - LASSO pre-screens candidates → top MAX_XREG_VARS
@@ -53,10 +46,12 @@ DATA_DIR   <- "S:/Projects/Credit_Union_Growth_Forecast/Data"
 PLOT_DIR   <- "plots_3b"
 RESULT_DIR <- "results_3b"
 
-DEBUG_MODE    <- TRUE
-DEBUG_ROLL_Q  <- 6
+DEBUG_MODE   <- TRUE
+DEBUG_ROLL_Q <- 6
 
-TRAIN_END  <- zoo::as.yearqtr("2021 Q1")
+# Store as numeric to avoid yearqtr/closure collision in data.table
+TRAIN_END <- as.numeric(zoo::as.yearqtr("2021 Q1"))  # 2021.00
+FC_END    <- as.numeric(zoo::as.yearqtr("2030 Q4"))  # 2030.75
 
 TSCV_MIN_TRAIN        <- 12L
 TSCV_MIN_TRAIN_SPARSE <- 8L
@@ -64,10 +59,9 @@ TSCV_H                <- 1L
 
 SPARSE_CATS <- c("7_10B_Plus", "1_Less_10M")
 
-MAX_XREG_VARS  <- 10L
-SIG_LEVEL      <- 0.10
+MAX_XREG_VARS <- 10L
+SIG_LEVEL     <- 0.10
 
-FC_END  <- zoo::as.yearqtr("2030 Q4")
 YOY_CAP <- 25.0   # assets swing wider than counts
 
 setwd(DATA_DIR)
@@ -83,6 +77,10 @@ if (!file.exists("qtrly_enriched_v3.rds"))
 
 qtrly <- readRDS("qtrly_enriched_v3.rds")
 setDT(qtrly)
+
+# Ensure yearqtr column is numeric for safe data.table comparisons
+qtrly[, yearqtr := as.numeric(yearqtr)]
+
 message(sprintf("    %s rows x %s cols", nrow(qtrly), ncol(qtrly)))
 
 CAT_LABELS <- c(
@@ -145,14 +143,15 @@ build_xreg <- function(dt, vars) {
 
 lasso_screen <- function(y, xmat, top_n = MAX_XREG_VARS) {
   if (is.null(xmat) || ncol(xmat) == 0L) return(character(0))
-  ok  <- is.finite(y) & apply(xmat, 1, function(r) all(is.finite(r)))
-  y2  <- y[ok]; x2 <- xmat[ok, , drop = FALSE]
+  ok <- is.finite(y) & apply(xmat, 1, function(r) all(is.finite(r)))
+  y2 <- y[ok]; x2 <- xmat[ok, , drop = FALSE]
   if (nrow(x2) < 10L) return(character(0))
-  cv  <- tryCatch(
+  cv <- tryCatch(
     cv.glmnet(x2, y2, alpha = 1, nfolds = 5, standardize = TRUE),
     error = function(e) NULL
   )
-  if (is.null(cv)) return(colnames(xmat)[seq_len(min(top_n, ncol(xmat)))])
+  if (is.null(cv))
+    return(colnames(xmat)[seq_len(min(top_n, ncol(xmat)))])
   coefs <- coef(cv, s = "lambda.1se")[-1, , drop = FALSE]
   nz    <- rownames(coefs)[coefs[, 1] != 0]
   if (length(nz) == 0L)
@@ -238,7 +237,7 @@ build_coef_dt <- function(fit, sig_level = SIG_LEVEL) {
   }
   vmat  <- tryCatch(diag(fit$var.coef), error = function(e) NULL)
   se    <- if (!is.null(vmat)) sqrt(pmax(vmat, 0)) else rep(NA_real_, length(cf))
-  tstat <- if (!is.null(vmat)) cf / se           else rep(NA_real_, length(cf))
+  tstat <- if (!is.null(vmat)) cf / se            else rep(NA_real_, length(cf))
   pval  <- if (!is.null(vmat))
     2 * pt(-abs(tstat), df = fit$nobs - length(cf)) else rep(NA_real_, length(cf))
   
@@ -293,9 +292,9 @@ print_model_summary <- function(label, fit, chosen_vars,
   message(sprintf("  |  AIC=%.1f  BIC=%.1f  sigma2=%.4f",
                   fit$aic, fit$bic, fit$sigma2 %||% NA))
   
-  cd <- build_coef_dt(fit)
-  arma_t  <- cd[tag == "[ARIMA]"]
-  xreg_t  <- cd[tag != "[ARIMA]" & term != "sigma2"]
+  cd       <- build_coef_dt(fit)
+  arma_t   <- cd[tag == "[ARIMA]"]
+  xreg_t   <- cd[tag != "[ARIMA]" & term != "sigma2"]
   
   if (nrow(arma_t) > 0) {
     message("  |  -- ARIMA terms --------------------------------")
@@ -344,9 +343,9 @@ all_coefs     <- list()
 qtrly_train <- qtrly[yearqtr <= TRAIN_END]
 qtrly_oos   <- qtrly[yearqtr >  TRAIN_END]
 
-available_macro <- intersect(MACRO_VARS,                   names(qtrly))
-available_exit  <- intersect(c(EXIT_VARS, EXIT_VARS_LAG),  names(qtrly))
-available_seas  <- intersect(SEAS_VARS,                    names(qtrly))
+available_macro <- intersect(MACRO_VARS,                  names(qtrly))
+available_exit  <- intersect(c(EXIT_VARS, EXIT_VARS_LAG), names(qtrly))
+available_seas  <- intersect(SEAS_VARS,                   names(qtrly))
 available_cands <- c(available_macro, available_exit, available_seas)
 
 if (DEBUG_MODE)
@@ -381,7 +380,7 @@ for (m in seq_len(nrow(models))) {
   }
   
   y_vec  <- train_dt[[target_col]]
-  yq_vec <- train_dt$yearqtr
+  yq_vec <- train_dt$yearqtr   # already numeric
   y_ts   <- ts(y_vec, frequency = 4,
                start = c(as.integer(floor(min(yq_vec))),
                          as.integer(round((min(yq_vec) %% 1) * 4 + 1))))
@@ -543,11 +542,9 @@ for (m in seq_len(nrow(models))) {
                           fill = TRUE)
       setorder(fwd_dt, yearqtr)
     }
-    # Exit vars unknown in forecast window → zero
     for (ev in intersect(c(EXIT_VARS, EXIT_VARS_LAG), chosen_vars))
       set(fwd_dt, j = ev, value = 0)
     xreg_fc <- build_xreg(fwd_dt, chosen_vars)
-    # Pad rows if forward panel is short
     if (!is.null(xreg_fc) && nrow(xreg_fc) < h_fc) {
       pad_rows  <- h_fc - nrow(xreg_fc)
       col_means <- colMeans(xreg_train_final, na.rm = TRUE)
@@ -574,7 +571,7 @@ for (m in seq_len(nrow(models))) {
   fc_mean <- pmin(pmax(as.numeric(fc_out$mean), -YOY_CAP), YOY_CAP)
   
   all_forecasts[[m]] <- data.table(
-    cu_type   = cu_type, cat = cat, cat_label = cat_lbl,
+    cu_type   = cu_type,  cat = cat,  cat_label = cat_lbl,
     yearqtr   = fc_qtrs,
     fc_mean   = fc_mean,
     fc_lo80   = as.numeric(fc_out$lower[, 1]),
@@ -584,7 +581,10 @@ for (m in seq_len(nrow(models))) {
   )
   
   all_metrics[[m]] <- data.table(
-    model_id       = m, cu_type = cu_type, cat = cat, cat_label = cat_lbl,
+    model_id       = m,
+    cu_type        = cu_type,
+    cat            = cat,
+    cat_label      = cat_lbl,
     target         = target_col,
     arima_order    = sprintf("(%d,%d,%d)(%d,%d,%d)[4]",
                              arima_order[1], arima_order[2], arima_order[3],
@@ -605,8 +605,8 @@ for (m in seq_len(nrow(models))) {
   )
   
   cd_dt <- build_coef_dt(fit_final)
-  cd_dt[, `:=`(model_id = m, cu_type = cu_type,
-               cat = cat, cat_label = cat_lbl)]
+  cd_dt[, `:=`(model_id  = m,        cu_type   = cu_type,
+               cat       = cat,      cat_label = cat_lbl)]
   all_coefs[[m]] <- cd_dt
   
   message(sprintf("  Done: %d forecast quarters saved.", h_fc))
@@ -653,34 +653,36 @@ make_ribbon_plot <- function(cu, title_str) {
   fc_sub   <- fc_all[cu_type == cu]
   hist_pfx <- paste0("yoy_", tolower(cu), "_assets_pct_")
   hist_cols <- intersect(paste0(hist_pfx, names(CAT_LABELS)), names(qtrly))
+  fc_sub[, cat_label := factor(cat_label, levels = unname(CAT_LABELS))]
   
   p <- ggplot()
   if (length(hist_cols) > 0) {
     hist_dt <- melt(qtrly[, c("yearqtr", hist_cols), with = FALSE],
-                    id.vars = "yearqtr",
-                    variable.name = "cat_col", value.name = "actual")
-    hist_dt[, cat := sub(hist_pfx, "", as.character(cat_col))]
-    hist_dt[, cat_label := CAT_LABELS[cat]]
+                    id.vars      = "yearqtr",
+                    variable.name = "cat_col",
+                    value.name   = "actual")
+    hist_dt[, cat      := sub(hist_pfx, "", as.character(cat_col))]
+    hist_dt[, cat_label := factor(CAT_LABELS[cat],
+                                  levels = unname(CAT_LABELS))]
     p <- p + geom_line(data = hist_dt[!is.na(actual)],
-                       aes(x = as.numeric(yearqtr), y = actual, color = "Actual"),
+                       aes(x = yearqtr, y = actual, color = "Actual"),
                        linewidth = 0.6)
   }
-  fc_sub[, cat_label := factor(cat_label, levels = CAT_LABELS)]
   p +
     geom_ribbon(data = fc_sub,
-                aes(x = as.numeric(yearqtr), ymin = fc_lo95, ymax = fc_hi95,
-                    fill = "95% CI"), alpha = 0.18) +
+                aes(x = yearqtr, ymin = fc_lo95, ymax = fc_hi95, fill = "95% CI"),
+                alpha = 0.18) +
     geom_ribbon(data = fc_sub,
-                aes(x = as.numeric(yearqtr), ymin = fc_lo80, ymax = fc_hi80,
-                    fill = "80% CI"), alpha = 0.28) +
+                aes(x = yearqtr, ymin = fc_lo80, ymax = fc_hi80, fill = "80% CI"),
+                alpha = 0.28) +
     geom_line(data = fc_sub,
-              aes(x = as.numeric(yearqtr), y = fc_mean, color = "Forecast"),
+              aes(x = yearqtr, y = fc_mean, color = "Forecast"),
               linewidth = 0.7, linetype = "dashed") +
     facet_wrap(~ cat_label, ncol = 2, scales = "free_y") +
-    scale_color_manual("", values = c("Actual"   = "#2c3e50",
-                                      "Forecast" = "#e74c3c")) +
-    scale_fill_manual("",  values = c("80% CI"   = "#3498db",
-                                      "95% CI"   = "#85c1e9")) +
+    scale_color_manual("",
+                       values = c("Actual" = "#2c3e50", "Forecast" = "#e74c3c")) +
+    scale_fill_manual("",
+                      values = c("80% CI" = "#3498db", "95% CI" = "#85c1e9")) +
     geom_hline(yintercept = 0, linetype = "dotted", color = "grey50") +
     labs(title = title_str,
          subtitle = "ARIMAX with FRB Baseline 2026 Macro | Part 3b",
@@ -708,22 +710,21 @@ if (nrow(fc_all[cu_type == "FISCU"]) > 0) {
 
 # P03: TSCV RMSE comparison
 if (nrow(met_all) > 0) {
-  met_plot <- copy(met_all)
-  met_plot[, model_label := factor(
-    sprintf("%s | %s", cu_type, cat),
-    levels = rev(sprintf("%s | %s", cu_type, cat)))]
-  met_melt <- melt(met_plot, id.vars = "model_label",
-                   measure.vars = c("tscv_rmse", "tscv_rmse_base"),
-                   variable.name = "rmse_type", value.name = "rmse")
-  met_melt[, rmse_type := ifelse(rmse_type == "tscv_rmse",
-                                 "ARIMAX", "Pure ARIMA")]
-  p03 <- ggplot(met_melt,
+  met_p3 <- copy(met_all)
+  met_p3[, model_label := sprintf("%s | %s", cu_type, cat)]
+  met_p3[, model_label := factor(model_label, levels = rev(model_label))]
+  m3_melt <- melt(met_p3, id.vars = "model_label",
+                  measure.vars = c("tscv_rmse", "tscv_rmse_base"),
+                  variable.name = "rmse_type", value.name = "rmse")
+  m3_melt[, rmse_type := ifelse(rmse_type == "tscv_rmse",
+                                "ARIMAX", "Pure ARIMA")]
+  p03 <- ggplot(m3_melt,
                 aes(x = model_label, y = rmse, fill = rmse_type)) +
     geom_col(position = position_dodge(0.7), width = 0.6) +
     coord_flip() +
     scale_fill_manual("",
                       values = c("ARIMAX" = "#2ecc71", "Pure ARIMA" = "#e74c3c")) +
-    labs(title = "TSCV RMSE: ARIMAX vs Pure ARIMA -- All 14 Asset Models",
+    labs(title    = "TSCV RMSE: ARIMAX vs Pure ARIMA -- All 14 Asset Models",
          subtitle = "Part 3b | Lower is better",
          x = NULL, y = "TSCV RMSE (YoY % pts)") +
     theme_cu() + theme(axis.text.y = element_text(size = 7))
@@ -734,30 +735,32 @@ if (nrow(met_all) > 0) {
 
 # P04: Metrics heatmap
 if (nrow(met_all) > 0) {
-  met_heat <- met_all[, .(cu_type, cat, tscv_delta_pct, sigma2)]
-  met_heat[, cat_label := CAT_LABELS[cat]]
+  met_h <- met_all[, .(cu_type, cat, tscv_delta_pct, sigma2)]
+  met_h[, cat_label := factor(CAT_LABELS[cat], levels = unname(CAT_LABELS))]
   
-  p04a <- ggplot(met_heat,
+  p04a <- ggplot(met_h,
                  aes(x = cu_type, y = cat_label, fill = tscv_delta_pct)) +
     geom_tile(color = "white") +
     geom_text(aes(label = sprintf("%.1f%%", tscv_delta_pct)), size = 3) +
     scale_fill_gradient2("TSCV Delta%",
                          low = "#27ae60", mid = "white", high = "#e74c3c", midpoint = 0) +
-    labs(title = "TSCV RMSE Improvement Over Pure ARIMA",
-         subtitle = "Negative = ARIMAX better", x = NULL, y = NULL) +
-    theme_cu()
+    labs(title    = "TSCV RMSE Improvement Over Pure ARIMA",
+         subtitle = "Negative = ARIMAX better",
+         x = NULL, y = NULL) + theme_cu()
   
-  p04b <- ggplot(met_heat,
+  p04b <- ggplot(met_h,
                  aes(x = cu_type, y = cat_label, fill = sigma2)) +
     geom_tile(color = "white") +
     geom_text(aes(label = sprintf("%.3f", sigma2)), size = 3) +
-    scale_fill_gradient("sigma2", low = "#d5f5e3", high = "#e74c3c") +
+    scale_fill_gradient("sigma2",
+                        low = "#d5f5e3", high = "#e74c3c") +
     labs(title = "Residual Variance (sigma2)", x = NULL, y = NULL) +
     theme_cu()
   
   p04 <- p04a + p04b +
-    plot_annotation(title = "Part 3b -- Asset Model Diagnostics",
-                    theme = theme(plot.title = element_text(face = "bold")))
+    plot_annotation(
+      title = "Part 3b -- Asset Model Diagnostics",
+      theme = theme(plot.title = element_text(face = "bold")))
   ggsave(file.path(PLOT_DIR, "P04_metrics_heatmap.pdf"),
          p04, width = 11, height = 6, device = cairo_pdf)
   message("    Saved P04.")
@@ -765,18 +768,18 @@ if (nrow(met_all) > 0) {
 
 # P05: Coefficient heatmap
 if (nrow(coef_all) > 0) {
-  coef_xreg <- coef_all[tag %in% c("[MACRO]", "[EXIT]", "[SEAS]") &
-                          !is.na(p_value)]
-  if (nrow(coef_xreg) > 0) {
-    coef_xreg[, model_label := sprintf("%s|%s", cu_type, cat)]
-    p05 <- ggplot(coef_xreg,
+  coef_x <- coef_all[tag %in% c("[MACRO]", "[EXIT]", "[SEAS]") &
+                       !is.na(p_value)]
+  if (nrow(coef_x) > 0) {
+    coef_x[, model_label := sprintf("%s|%s", cu_type, cat)]
+    p05 <- ggplot(coef_x,
                   aes(x = model_label, y = term, fill = estimate)) +
       geom_tile(color = "grey80") +
       geom_text(aes(label = significance), size = 2.5) +
       scale_fill_gradient2("Coef",
                            low = "#3498db", mid = "white", high = "#e74c3c", midpoint = 0) +
-      labs(title = "Regressor Coefficients -- All 14 Asset Models",
-           subtitle = "Stars: ***p<0.001 **p<0.01 *p<0.05 .p<0.10",
+      labs(title    = "Regressor Coefficients -- All 14 Asset Models",
+           subtitle = "Stars: ***p<0.001  **p<0.01  *p<0.05  .p<0.10",
            x = NULL, y = NULL) +
       theme_cu() +
       theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
@@ -787,27 +790,21 @@ if (nrow(coef_all) > 0) {
   }
 }
 
-# P06: OOS RMSE
+# P06: OOS RMSE comparison
 if (nrow(met_all) > 0 && any(!is.na(met_all$oos_rmse))) {
-  oos_melt <- melt(met_all[!is.na(oos_rmse)],
-                   id.vars = "model_label",
-                   measure.vars = c("oos_rmse", "oos_rmse_base"),
-                   variable.name = "type", value.name = "rmse")
-  if (!"model_label" %in% names(met_all))
-    met_all[, model_label := sprintf("%s | %s", cu_type, cat)]
-  oos_melt2 <- melt(met_all[!is.na(oos_rmse)][,
-                                              model_label := sprintf("%s | %s", cu_type, cat)],
-                    id.vars = "model_label",
-                    measure.vars = c("oos_rmse", "oos_rmse_base"),
-                    variable.name = "type", value.name = "rmse")
-  oos_melt2[, type := ifelse(type == "oos_rmse", "ARIMAX", "Pure ARIMA")]
-  p06 <- ggplot(oos_melt2,
+  oos_sub <- met_all[!is.na(oos_rmse)]
+  oos_sub[, model_label := sprintf("%s | %s", cu_type, cat)]
+  oos_m <- melt(oos_sub, id.vars = "model_label",
+                measure.vars = c("oos_rmse", "oos_rmse_base"),
+                variable.name = "type", value.name = "rmse")
+  oos_m[, type := ifelse(type == "oos_rmse", "ARIMAX", "Pure ARIMA")]
+  p06 <- ggplot(oos_m,
                 aes(x = model_label, y = rmse, fill = type)) +
     geom_col(position = position_dodge(0.7), width = 0.6) +
     coord_flip() +
     scale_fill_manual("",
                       values = c("ARIMAX" = "#2ecc71", "Pure ARIMA" = "#e74c3c")) +
-    labs(title = "OOS RMSE: ARIMAX vs Pure ARIMA -- Asset Models",
+    labs(title    = "OOS RMSE: ARIMAX vs Pure ARIMA -- Asset Models",
          subtitle = "Part 3b | Post-2021Q1 holdout",
          x = NULL, y = "OOS RMSE (YoY % pts)") +
     theme_cu()
@@ -818,18 +815,20 @@ if (nrow(met_all) > 0 && any(!is.na(met_all$oos_rmse))) {
 
 # P07: xreg selection frequency
 if (nrow(met_all) > 0) {
-  xreg_rows <- met_all[!is.na(xreg_chosen) & nchar(xreg_chosen) > 0,
-                       .(model_label = sprintf("%s|%s", cu_type, cat), xreg_chosen)]
-  if (nrow(xreg_rows) > 0) {
-    xreg_long <- xreg_rows[,
-                           .(var = unlist(strsplit(xreg_chosen, "\\|"))), by = model_label]
-    freq_dt <- xreg_long[, .N, by = var][order(-N)]
+  xr_rows <- met_all[!is.na(xreg_chosen) & nchar(xreg_chosen) > 0,
+                     .(ml = sprintf("%s|%s", cu_type, cat), xreg_chosen)]
+  if (nrow(xr_rows) > 0) {
+    xr_long  <- xr_rows[,
+                        .(var = unlist(strsplit(xreg_chosen, "\\|"))), by = ml]
+    freq_dt  <- xr_long[, .N, by = var][order(-N)]
     p07 <- ggplot(freq_dt[seq_len(min(20, nrow(freq_dt)))],
                   aes(x = reorder(var, N), y = N)) +
-      geom_col(fill = "#3498db") + coord_flip() +
-      labs(title = "Most Frequently Selected Regressors -- Part 3b",
+      geom_col(fill = "#3498db") +
+      coord_flip() +
+      labs(title    = "Most Frequently Selected Regressors -- Part 3b",
            subtitle = "Count of models (out of 14) where variable chosen by TSCV",
-           x = NULL, y = "# Models Selected") + theme_cu()
+           x = NULL, y = "# Models Selected") +
+      theme_cu()
     ggsave(file.path(PLOT_DIR, "P07_xreg_selection_freq.pdf"),
            p07, width = 9, height = 6, device = cairo_pdf)
     message("    Saved P07.")
@@ -838,15 +837,15 @@ if (nrow(met_all) > 0) {
 
 # P08: Per-model 2x2 regression PDF (all 14 models)
 message("  P08: Per-model regression PDF (all 14 models)...")
-pdf_pages  <- list()
-model_idx  <- 0L
+pdf_pages <- list()
+model_idx <- 0L
 
 for (m in seq_len(nrow(models))) {
   
-  cu_type_m  <- models$cu_type[m]
-  cat_m      <- models$cat[m]
-  cat_lbl_m  <- CAT_LABELS[cat_m]
-  target_m   <- paste0(TARGET_ROOTS[cu_type_m], "_", cat_m)
+  cu_type_m <- models$cu_type[m]
+  cat_m     <- models$cat[m]
+  cat_lbl_m <- CAT_LABELS[cat_m]
+  target_m  <- paste0(TARGET_ROOTS[cu_type_m], "_", cat_m)
   
   met_row <- met_all[cu_type == cu_type_m & cat == cat_m]
   if (nrow(met_row) == 0 || !target_m %in% names(qtrly)) next
@@ -854,23 +853,24 @@ for (m in seq_len(nrow(models))) {
   train_m <- qtrly_train[is.finite(get(target_m))]
   if (nrow(train_m) < 8) next
   
-  y_m   <- train_m[[target_m]]
-  yq_m  <- train_m$yearqtr
+  y_m    <- train_m[[target_m]]
+  yq_m   <- train_m$yearqtr
   y_ts_m <- ts(y_m, frequency = 4,
                start = c(as.integer(floor(min(yq_m))),
                          as.integer(round((min(yq_m) %% 1) * 4 + 1))))
   
-  # Parse stored ARIMA order string
+  # Parse stored ARIMA order string  e.g. "(1,1,0)(0,1,1)[4]"
   astr <- met_row$arima_order[1]
   om   <- regmatches(astr,
                      regexpr("\\((\\d+),(\\d+),(\\d+)\\)\\((\\d+),(\\d+),(\\d+)\\)", astr))
   if (length(om) == 0) next
-  nums_m <- as.integer(regmatches(om[[1]], gregexpr("\\d+", om[[1]])[[1]]))
+  nums_m <- as.integer(regmatches(om[[1]],
+                                  gregexpr("\\d+", om[[1]])[[1]]))
   ao_m   <- nums_m[1:3]
   as_m   <- list(order = nums_m[4:6], period = 4L)
   
-  cv_str  <- met_row$xreg_chosen[1]
-  cv_m    <- if (!is.na(cv_str) && nchar(cv_str) > 0)
+  cv_str <- met_row$xreg_chosen[1]
+  cv_m   <- if (!is.na(cv_str) && nchar(cv_str) > 0)
     strsplit(cv_str, "\\|")[[1]] else character(0)
   
   xr_m <- if (length(cv_m) > 0) build_xreg(train_m, cv_m) else NULL
@@ -882,10 +882,9 @@ for (m in seq_len(nrow(models))) {
   )
   if (is.null(fit_r)) next
   
-  fv <- as.numeric(fitted(fit_r))
-  rv <- as.numeric(residuals(fit_r))
-  dt_fit <- data.table(yq = as.numeric(yq_m),
-                       actual = y_m, fitted = fv, resid = rv)
+  fv     <- as.numeric(fitted(fit_r))
+  rv     <- as.numeric(residuals(fit_r))
+  dt_fit <- data.table(yq = yq_m, actual = y_m, fitted = fv, resid = rv)
   
   pan1 <- ggplot(dt_fit, aes(x = yq)) +
     geom_line(aes(y = actual, color = "Actual"),  linewidth = 0.7) +
@@ -909,7 +908,9 @@ for (m in seq_len(nrow(models))) {
       "----------------------------------------",
       cd_row$disp
     ), collapse = "\n")
-  } else { coef_txt <- "No coefficients available." }
+  } else {
+    coef_txt <- "No coefficients available."
+  }
   
   pan2 <- ggplot() +
     annotate("text", x = 0, y = 1, label = coef_txt,
@@ -924,15 +925,14 @@ for (m in seq_len(nrow(models))) {
                 linewidth = 0.7, span = 0.5) +
     labs(title = "Residuals", x = NULL, y = "Residual") + theme_cu()
   
-  r2_v <- 1 - sum(rv^2, na.rm = TRUE) /
+  r2_v      <- 1 - sum(rv^2, na.rm = TRUE) /
     sum((y_m - mean(y_m, na.rm = TRUE))^2, na.rm = TRUE)
   stats_txt <- sprintf(
     "n = %d obs\nARIMA%s\nxreg vars: %d\nTSCV RMSE: %.4f\nBase RMSE: %.4f\nDelta RMSE: %.2f%%\nAdj-R2 ~ %.4f\nAIC: %.1f\nBIC: %.1f\nsigma2 = %.4f",
     length(y_m), astr, length(cv_m),
     met_row$tscv_rmse[1], met_row$tscv_rmse_base[1],
     met_row$tscv_delta_pct[1], r2_v,
-    fit_r$aic, fit_r$bic, fit_r$sigma2 %||% NA
-  )
+    fit_r$aic, fit_r$bic, fit_r$sigma2 %||% NA)
   
   pan4 <- ggplot() +
     annotate("text", x = 0, y = 1, label = stats_txt,
@@ -947,10 +947,9 @@ for (m in seq_len(nrow(models))) {
       subtitle = sprintf("Target: %s", target_m),
       theme    = theme(
         plot.title    = element_text(face = "bold", size = 11),
-        plot.subtitle = element_text(size = 8, color = "grey40"))
-    )
+        plot.subtitle = element_text(size = 8, color = "grey40")))
   
-  model_idx         <- model_idx + 1L
+  model_idx             <- model_idx + 1L
   pdf_pages[[model_idx]] <- page
 }
 
