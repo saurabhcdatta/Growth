@@ -114,9 +114,40 @@ if (!file.exists("qtrly_enriched_v3.rds"))
 
 qtrly <- readRDS("qtrly_enriched_v3.rds")
 setDT(qtrly)
-message(sprintf("    %s rows × %s cols",
+message(sprintf("    Final: %s rows x %s cols",
                 format(nrow(qtrly), big.mark=","),
                 format(ncol(qtrly), big.mark=",")))
+
+# Inline macro merge guard
+if (!"fedfunds" %in% names(qtrly)) {
+  message("    [MACRO MERGE] macro columns absent - running inline merge...")
+  macro_rds <- "macro_features_v4.rds"
+  if (!file.exists(macro_rds))
+    stop(paste0("macro_features_v4.rds not found.\nRun macro_v4_frb.R first."))
+  m_mac <- readRDS(macro_rds)
+  setDT(m_mac)
+  if (!inherits(qtrly$date, "yearqtr")) qtrly[, date := zoo::as.yearqtr(date)]
+  if (!inherits(m_mac$date,  "yearqtr")) m_mac[,  date := zoo::as.yearqtr(date)]
+  hist_end_mac <- zoo::as.yearqtr("2025 Q3")
+  m_hist <- if ("is_forecast" %in% names(m_mac))
+              m_mac[is_forecast == FALSE | date <= hist_end_mac]
+            else m_mac[date <= hist_end_mac]
+  merge_cols_mac <- setdiff(names(m_hist), c("date", "is_forecast"))
+  stale <- intersect(merge_cols_mac, names(qtrly))
+  if (length(stale) > 0) qtrly[, (stale) := NULL]
+  idx <- match(qtrly$date, m_hist\$date)
+  n_match <- sum(!is.na(idx))
+  message(sprintf("    [MACRO MERGE] %d / %d rows matched (%.0f%%)",
+                  n_match, nrow(qtrly), n_match/nrow(qtrly)*100))
+  if (n_match == 0)
+    stop("Inline macro merge: 0 date matches.")
+  for (col in merge_cols_mac)
+    qtrly[, (col) := m_hist[[col]][idx]]
+  message(sprintf("    [MACRO MERGE] Done - qtrly now %d cols", ncol(qtrly)))
+  rm(m_mac, m_hist, merge_cols_mac, stale, idx, n_match, hist_end_mac, macro_rds)
+} else {
+  message("    Macro present (fedfunds detected) - no inline merge needed")
+}
 
 CAT_MAP <- c("1"="1_Less_10M","2"="2_10M_50M","3"="3_50M_100M",
              "4"="4_100M_500M","5"="5_500M_1B","6"="6_1B_10B",
