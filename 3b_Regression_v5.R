@@ -97,6 +97,17 @@ if (!file.exists("modeling_panel_v5.rds"))
 
 qtrly <- readRDS("modeling_panel_v5.rds")
 setDT(qtrly)
+
+# ── Strip haven_labelled class from all columns ──────────────
+# Some columns may carry haven_labelled class from SPSS/SAS/Stata
+# imports via the haven package. This causes median(), var(), and
+# other base R functions to fail. Convert to plain numeric/character.
+for (cn in names(qtrly)) {
+  if (inherits(qtrly[[cn]], "haven_labelled")) {
+    qtrly[[cn]] <- as.numeric(qtrly[[cn]])
+  }
+}
+
 message(sprintf("    %s rows × %s cols",
                 format(nrow(qtrly), big.mark=","),
                 format(ncol(qtrly), big.mark=",")))
