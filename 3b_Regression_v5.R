@@ -2389,6 +2389,13 @@ series_meta_3b <- list(
 # Fit auto.arima() on observed level series (no xreg).
 # Lets the reader compare: does adding macro xreg improve on
 # a simple univariate ARIMA benchmark?
+#
+# IMPORTANT: Asset level series are non-stationary (trending upward).
+# We use stepwise=FALSE to do a thorough search and avoid the
+# pathological ARIMA(0,0,0) = constant-mean model.  If auto.arima
+# still picks (0,0,0), we force d=1 and refit — a flat forecast
+# at the historical mean is never a reasonable benchmark for
+# trending asset series.
 message("    Fitting pure ARIMA baselines (benchmark)...")
 arima_base_list <- list()
 
@@ -2405,11 +2412,59 @@ for (sr in names(series_meta_3b)) {
 
     y_ts <- ts(cat_hist[[hcol]], frequency = 4L, start = c(2005L, 1L))
 
+    # ── Primary fit: thorough search (no shortcuts) ──────────
     fit_a <- tryCatch(
-      forecast::auto.arima(y_ts, stepwise = TRUE, approximation = TRUE,
-                           max.p = 3L, max.q = 2L, max.P = 1L, max.Q = 1L),
-      error = function(e) NULL)
+      forecast::auto.arima(y_ts,
+                           stepwise     = FALSE,    # exhaustive search
+                           approximation = FALSE,   # exact likelihood
+                           max.p = 3L, max.q = 2L,
+                           max.P = 1L, max.Q = 1L,
+                           max.d = 2L, max.D = 1L,
+                           seasonal = TRUE),
+      error = function(e) {
+        # Fallback to stepwise if exhaustive search fails
+        tryCatch(
+          forecast::auto.arima(y_ts, stepwise = TRUE,
+                               approximation = TRUE,
+                               max.p = 3L, max.q = 2L,
+                               max.P = 1L, max.Q = 1L),
+          error = function(e2) NULL)
+      })
     if (is.null(fit_a)) next
+
+    # ── Guard: reject ARIMA(0,0,0)(0,0,0) for trending series ──
+    # A flat-mean forecast is unrealistic for asset levels.
+    # Force d=1 (or D=1) and refit if auto.arima picked all zeros.
+    ord_a <- forecast::arimaorder(fit_a)
+    is_trivial <- all(ord_a[c("p","d","q","P","D","Q")] == 0L)
+    if (is_trivial) {
+      message(sprintf("      [P16 GUARD] %s | %s: auto.arima chose ARIMA(0,0,0) — refitting with d=1",
+                      sr, cat))
+      fit_a2 <- tryCatch(
+        forecast::auto.arima(y_ts,
+                             d = 1L,                  # force first differencing
+                             stepwise     = FALSE,
+                             approximation = FALSE,
+                             max.p = 3L, max.q = 2L,
+                             max.P = 1L, max.Q = 1L,
+                             max.D = 1L,
+                             seasonal = TRUE),
+        error = function(e) {
+          # Minimal fallback: ARIMA(1,1,0) — random walk with drift
+          tryCatch(
+            forecast::Arima(y_ts, order = c(1L, 1L, 0L),
+                           seasonal = list(order = c(0L, 0L, 0L), period = 4L)),
+            error = function(e2) NULL)
+        })
+      if (!is.null(fit_a2)) {
+        ord_a2 <- forecast::arimaorder(fit_a2)
+        message(sprintf("      [P16 GUARD] Refitted: ARIMA(%d,%d,%d)(%d,%d,%d)[4]  AIC=%.1f (was %.1f)",
+                        ord_a2["p"], ord_a2["d"], ord_a2["q"],
+                        ord_a2["P"], ord_a2["D"], ord_a2["Q"],
+                        AIC(fit_a2), AIC(fit_a)))
+        fit_a <- fit_a2
+      }
+    }
 
     fc_a <- tryCatch(
       forecast::forecast(fit_a, h = HORIZON_QTR, level = 95),
@@ -2418,6 +2473,7 @@ for (sr in names(series_meta_3b)) {
 
     fc_dates <- LAST_OBS + seq_len(HORIZON_QTR) / 4
 
+    ord_final <- forecast::arimaorder(fit_a)
     arima_base_list[[key]] <- data.table(
       series      = sr,
       cat_label   = cat,
@@ -2425,8 +2481,9 @@ for (sr in names(series_meta_3b)) {
       arima_point = as.numeric(fc_a$mean),
       arima_lo95  = as.numeric(fc_a$lower[, 1L]),
       arima_hi95  = as.numeric(fc_a$upper[, 1L]),
-      arima_order = paste0("ARIMA(",
-                     paste(forecast::arimaorder(fit_a), collapse = ","), ")")
+      arima_order = sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
+                     ord_final["p"], ord_final["d"], ord_final["q"],
+                     ord_final["P"], ord_final["D"], ord_final["Q"])
     )
   }
 }
