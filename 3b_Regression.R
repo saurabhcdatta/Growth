@@ -52,6 +52,23 @@ options(scipen = 999)
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 &&
                                !is.na(a[1])) a else b
 
+# Safe rbindlist: normalises date/date_d class mismatches before binding.
+# Prevents "class attribute on column N doesn't match" errors when
+# combining qtrly-sourced (yearqtr) and forecast-sourced (numeric) tables.
+safe_rbind <- function(..., fill = TRUE) {
+  tbls <- Filter(function(x) !is.null(x) && nrow(x) > 0, list(...))
+  if (length(tbls) == 0L) return(data.table())
+  tbls <- lapply(tbls, function(dt) {
+    dt <- copy(dt)
+    if ("date" %in% names(dt))
+      dt[, date := as.numeric(date)]
+    if ("date_d" %in% names(dt))
+      dt[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
+    dt
+  })
+  rbindlist(tbls, fill = fill)
+}
+
 # ════════════════════════════════════════════════════════════
 # 1. CONFIG
 # ════════════════════════════════════════════════════════════
@@ -284,6 +301,23 @@ macro_feats_avail <- macro_feats_avail[vapply(macro_feats_avail, function(cn) {
 }, logical(1))]
 macro_feats <- macro_feats_avail
 
+# ── Forward-fill macro columns within each category ──────────────────────
+# Macro values are broadcast from the quarterly time series — any NAs come
+# from rolling/lag transforms at series starts (e.g. rmean8 needs 8 quarters
+# before it is non-NA). LOCF within category ensures prep_X sees full
+# coverage for all training windows without leaking future information.
+macro_cols_present <- intersect(macro_feats, names(qtrly))
+if (length(macro_cols_present) > 0) {
+  setorderv(qtrly, c("categories","date"))
+  qtrly[, (macro_cols_present) := lapply(.SD, function(x)
+    data.table::nafill(x, type = "locf")
+  ), by = categories, .SDcols = macro_cols_present]
+  message(sprintf("    Forward-filled %d macro cols (LOCF by category)",
+                  length(macro_cols_present)))
+} else {
+  message("    [WARN] No macro cols found in qtrly for forward-fill — check macro_v4 merge")
+}
+
 # ── Create _lag1 exit columns on-the-fly if not already present ──
 # Part 1 may or may not have produced these; create them here to
 # guarantee they exist before FEATS_ALL is assembled.
@@ -344,6 +378,34 @@ message(sprintf("    Macro features    : %d (incl. transforms)", length(macro_fe
 message(sprintf("    Exit rate features: %d", length(exit_feats)))
 message(sprintf("    Seasonal dummies  : EXCLUDED (ARIMA seasonal structure handles this)"))
 message(sprintf("    Total features    : %d", length(FEATS_ALL)))
+
+# ── HARD CHECK: Warn immediately if macro features are empty ─────────────
+if (length(macro_feats) == 0) {
+  message("")
+  message("  ╔══════════════════════════════════════════════════════════════╗")
+  message("  ║  WARNING: 0 macro features found in qtrly!                  ║")
+  message("  ║  LASSO will run on exit vars only — no macroeconomic signal ║")
+  message("  ║  Possible causes:                                            ║")
+  message("  ║    1. macro_v4_frb.R has NOT been run yet                   ║")
+  message("  ║    2. qtrly_enriched_v3.rds loaded BEFORE macro merge       ║")
+  message("  ║    3. Column naming mismatch between CURATED_MACRO and data ║")
+  message("  ║  Check: names(qtrly) for fedfunds, gs10, unrate etc.        ║")
+  message("  ╚══════════════════════════════════════════════════════════════╝")
+  message("")
+  # Print first 30 numeric col names so user can see what IS present
+  message(sprintf("  Numeric cols in qtrly (first 30): %s",
+                  paste(head(all_num_cols, 30), collapse=", ")))
+} else {
+  # Verify macro cols are actually present in qtrly (not just named in FEATS_ALL)
+  macro_in_qtrly <- intersect(macro_feats, names(qtrly))
+  macro_missing  <- setdiff(macro_feats, names(qtrly))
+  message(sprintf("    Macro feats in qtrly  : %d / %d present",
+                  length(macro_in_qtrly), length(macro_feats)))
+  if (length(macro_missing) > 0)
+    message(sprintf("    Macro feats NOT in qtrly (%d): %s",
+                    length(macro_missing),
+                    paste(head(macro_missing, 10), collapse=", ")))
+}
 message(sprintf("    (was ~500+ with all FRB transforms; now focused on %d causal drivers)",
                 length(FEATS_ALL)))
 
@@ -429,22 +491,52 @@ get_xreg_names <- function(fit) {
               nms, perl=TRUE)]
 }
 
-# Build a clean feature matrix from a data.table
-prep_X <- function(dt, feats, corr_cut=0.92, min_nonmiss=0.70) {
-  cols <- intersect(feats, names(dt))
-  if (length(cols) == 0) return(NULL)
+# Build a clean feature matrix from a data.table.
+# verbose=TRUE prints per-stage drop counts for diagnostics.
+prep_X <- function(dt, feats, corr_cut=0.92, min_nonmiss=0.60, verbose=FALSE) {
+  # Stage 0: which requested features actually exist in dt?
+  not_in_dt <- setdiff(feats, names(dt))
+  cols       <- intersect(feats, names(dt))
+  if (verbose && length(not_in_dt) > 0)
+    message(sprintf("        [prep_X] %d feats not in dt (missing cols): %s",
+                    length(not_in_dt), paste(head(not_in_dt, 10), collapse=", ")))
+  if (length(cols) == 0) {
+    if (verbose) message("        [prep_X] 0 cols after intersect — returning NULL")
+    return(NULL)
+  }
   mat <- as.matrix(dt[, cols, with=FALSE])
-  # Drop near-constant or high-missing columns
+  n_start <- ncol(mat)
+
+  # Stage 1: missingness filter
   ok_miss <- apply(mat, 2, function(x) mean(!is.na(x)) >= min_nonmiss)
-  ok_var  <- apply(mat, 2, function(x) var(x, na.rm=TRUE) > 1e-10)
-  mat <- mat[, ok_miss & ok_var, drop=FALSE]
-  if (ncol(mat) == 0) return(NULL)
-  # Impute remaining NAs with column median
+  dropped_miss <- colnames(mat)[!ok_miss]
+  mat <- mat[, ok_miss, drop=FALSE]
+  if (verbose && length(dropped_miss) > 0)
+    message(sprintf("        [prep_X] dropped %d cols (>%.0f%% missing): %s",
+                    length(dropped_miss), (1-min_nonmiss)*100,
+                    paste(head(dropped_miss, 10), collapse=", ")))
+
+  # Stage 2: near-zero variance filter
+  ok_var <- apply(mat, 2, function(x) var(x, na.rm=TRUE) > 1e-10)
+  dropped_var <- colnames(mat)[!ok_var]
+  mat <- mat[, ok_var, drop=FALSE]
+  if (verbose && length(dropped_var) > 0)
+    message(sprintf("        [prep_X] dropped %d cols (near-zero var): %s",
+                    length(dropped_var), paste(head(dropped_var, 10), collapse=", ")))
+
+  if (ncol(mat) == 0) {
+    if (verbose) message("        [prep_X] 0 cols after miss+var filter — returning NULL")
+    return(NULL)
+  }
+
+  # Stage 3: impute remaining NAs with column median
   for (j in seq_len(ncol(mat))) {
     na_j <- is.na(mat[,j])
     if (any(na_j)) mat[na_j, j] <- median(mat[,j], na.rm=TRUE)
   }
-  # Drop highly correlated columns (keep first of each pair)
+
+  # Stage 4: correlation filter (keep first of each highly-correlated pair)
+  n_before_corr <- ncol(mat)
   if (ncol(mat) > 2) {
     cr  <- cor(mat, use="pairwise.complete.obs")
     cr[is.na(cr)] <- 0
@@ -457,6 +549,13 @@ prep_X <- function(dt, feats, corr_cut=0.92, min_nonmiss=0.70) {
     }
     mat <- mat[, keep, drop=FALSE]
   }
+  if (verbose)
+    message(sprintf("        [prep_X] summary: %d requested → %d in dt → %d post-miss → %d post-var → %d post-corr",
+                    length(feats), n_start,
+                    n_start - length(dropped_miss),
+                    n_start - length(dropped_miss) - length(dropped_var),
+                    ncol(mat)))
+
   if (ncol(mat) == 0) return(NULL)
   mat
 }
@@ -626,7 +725,8 @@ compute_adj_r2 <- function(fit, y_vec) {
 }
 
 fit_window_3a <- function(train_dt, test_row, dep_var, feats,
-                          min_obs = TSCV_MIN_TRAIN) {
+                          min_obs = TSCV_MIN_TRAIN,
+                          verbose_prep = FALSE) {
 
   y_train <- train_dt[[dep_var]]
   n_valid <- sum(!is.na(y_train))
@@ -706,9 +806,12 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
 
   # ── STANDARD PATH (n_obs >= min_obs) ────────────────────
   # Build feature matrix
-  X_train <- prep_X(train_dt, feats)
-  if (is.null(X_train) || ncol(X_train) < 1L)
+  X_train <- prep_X(train_dt, feats, verbose=verbose_prep)
+  if (is.null(X_train) || ncol(X_train) < 1L) {
+    if (verbose_prep)
+      message(sprintf("        [prep_X] ALL features dropped — pure ARIMA fallback"))
     return(list(ok=FALSE, reason="no features after prep"))
+  }
   x_train_cols <- colnames(X_train)
 
   # ── Step 1: LASSO pre-screening ──────────────────────────
@@ -1172,8 +1275,29 @@ for (dv in names(DEP_VARS)) {
       train_dt <- cat_dt[train_idx]
       test_row  <- cat_dt[test_idx][1L]
 
+      # verbose=TRUE on first test quarter per cat/dv so we can see
+      # exactly what features survive into X_train for each series
+      is_first_window <- (tq == test_quarters[1L])
+
+      # ── One-time macro diagnostic per cat/dv ─────────────────
+      if (is_first_window) {
+        macro_in_train <- intersect(macro_feats, names(train_dt))
+        macro_nonmiss  <- vapply(macro_in_train, function(cn)
+          mean(!is.na(train_dt[[cn]])), numeric(1))
+        n_pass70  <- sum(macro_nonmiss >= 0.70)
+        n_fail70  <- sum(macro_nonmiss <  0.70)
+        message(sprintf("        [MACRO CHECK] %s | %s: %d macro cols in train_dt | pass 70%%: %d | fail 70%%: %d",
+                        dv, cat, length(macro_in_train), n_pass70, n_fail70))
+        if (n_fail70 > 0 && n_fail70 <= 10)
+          message(sprintf("        [MACRO MISS]  failing cols: %s",
+                          paste(names(macro_nonmiss)[macro_nonmiss < 0.70], collapse=", ")))
+        if (length(macro_in_train) == 0)
+          message("        [MACRO WARN]  NO macro cols found in train_dt — check qtrly merge!")
+      }
+
       res <- fit_window_3a(train_dt, test_row, dv, feats_dv,
-                           min_obs = min_train_cat)
+                           min_obs = min_train_cat,
+                           verbose_prep = is_first_window)
       # Track last_res as the most recent SUCCESSFUL result for screen print.
       # Failed windows (ok=FALSE) are skipped so the print always reflects
       # a real fitted model — not a NULL/empty failure object.
