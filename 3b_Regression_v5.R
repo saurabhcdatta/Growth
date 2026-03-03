@@ -121,28 +121,7 @@ message(sprintf("    Date range : %s → %s  (%d quarters)",
                 length(all_quarters)))
 
 
-# -- DATA LOAD DIAGNOSTIC + CURATED NAME CHECK --
-macro_cols_in_data <- grep("^macro_", names(qtrly), value=TRUE)
-message(sprintf("    macro_ columns in panel: %d", length(macro_cols_in_data)))
-if (length(macro_cols_in_data) > 0)
-  message(sprintf("    Sample: %s", paste(head(macro_cols_in_data, 15), collapse=", ")))
-
-curated_check <- vapply(CURATED_MACRO, function(cm) cm %in% names(qtrly), logical(1))
-message(sprintf("    Curated macro vars found: %d / %d", sum(curated_check), length(CURATED_MACRO)))
-if (sum(curated_check) == 0) {
-  message("    >>> NONE of the curated names match! Searching variants...")
-  for (pat in c("fedfunds", "gs10", "unrate", "gdp_real", "yield_curve")) {
-    hits <- grep(pat, names(qtrly), value=TRUE, ignore.case=TRUE)
-    message(sprintf("      %-15s : %s", pat,
-                    if(length(hits)>0) paste(head(hits,5),collapse=", ") else "NONE"))
-  }
-  message(sprintf("    First 40 macro_ cols:"))
-  for (mc in head(macro_cols_in_data, 40)) message(sprintf("      %s", mc))
-} else {
-  missed_cm <- CURATED_MACRO[!curated_check]
-  if (length(missed_cm) > 0)
-    message(sprintf("    Missing (%d): %s", length(missed_cm), paste(missed_cm, collapse=", ")))
-}
+# NOTE: CURATED_MACRO diagnostic moved to after CURATED_MACRO definition (Section 3)
 
 # ════════════════════════════════════════════════════════════
 # 3. DEFINE TARGETS AND FEATURES
@@ -295,6 +274,30 @@ STATIONARY_TRANSFORMS <- paste(
   sep="|"
 )
 
+
+# -- DATA LOAD DIAGNOSTIC + CURATED NAME CHECK --
+# (Placed here because CURATED_MACRO must be defined first)
+macro_cols_in_data <- grep("^macro_", names(qtrly), value=TRUE)
+message(sprintf("    macro_ columns in panel: %d", length(macro_cols_in_data)))
+if (length(macro_cols_in_data) > 0)
+  message(sprintf("    Sample: %s", paste(head(macro_cols_in_data, 15), collapse=", ")))
+
+curated_check <- vapply(CURATED_MACRO, function(cm) cm %in% names(qtrly), logical(1))
+message(sprintf("    Curated macro vars found: %d / %d", sum(curated_check), length(CURATED_MACRO)))
+if (sum(curated_check) == 0) {
+  message("    >>> NONE of the curated names match! Searching variants...")
+  for (pat in c("fedfunds", "gs10", "unrate", "gdp_real", "yield_curve")) {
+    hits <- grep(pat, names(qtrly), value=TRUE, ignore.case=TRUE)
+    message(sprintf("      %-15s : %s", pat,
+                    if(length(hits)>0) paste(head(hits,5),collapse=", ") else "NONE"))
+  }
+  message(sprintf("    First 40 macro_ cols:"))
+  for (mc in head(macro_cols_in_data, 40)) message(sprintf("      %s", mc))
+} else {
+  missed_cm <- CURATED_MACRO[!curated_check]
+  if (length(missed_cm) > 0)
+    message(sprintf("    Missing (%d): %s", length(missed_cm), paste(missed_cm, collapse=", ")))
+}
 
 # Collect all numeric column names
 all_num_cols <- names(qtrly)[vapply(qtrly, is.numeric, logical(1))]
