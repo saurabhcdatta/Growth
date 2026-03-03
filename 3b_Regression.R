@@ -135,7 +135,7 @@ if (!"fedfunds" %in% names(qtrly)) {
   merge_cols_mac <- setdiff(names(m_hist), c("date", "is_forecast"))
   stale <- intersect(merge_cols_mac, names(qtrly))
   if (length(stale) > 0) qtrly[, (stale) := NULL]
-  idx <- match(qtrly$date, m_hist\$date)
+  idx <- match(qtrly$date, m_hist$date)
   n_match <- sum(!is.na(idx))
   message(sprintf("    [MACRO MERGE] %d / %d rows matched (%.0f%%)",
                   n_match, nrow(qtrly), n_match/nrow(qtrly)*100))
