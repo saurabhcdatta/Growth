@@ -639,7 +639,7 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
 
   # Build ts object
   train_dates <- sort(train_dt$date)
-  min_yq   <- zoo::as.yearqtr(min(train_dates))
+  min_yq   <- as.numeric(zoo::as.yearqtr(min(train_dates)))
   start_yr <- as.integer(format(min_yq, "%Y"))
   start_q  <- as.integer(format(min_yq, "%q"))
   y_ts     <- ts(y_train_w, frequency=4L, start=c(start_yr, start_q))
@@ -1129,7 +1129,7 @@ for (dv in names(DEP_VARS)) {
     min_train_cat <- if (cat %in% SPARSE_CATS) TSCV_MIN_TRAIN_SPARSE else TSCV_MIN_TRAIN
 
     for (tq in test_quarters) {
-      train_idx <- cat_dt$date >= zoo::as.yearqtr("2005 Q1") &
+      train_idx <- cat_dt$date >= as.numeric(zoo::as.yearqtr("2005 Q1")) &
                    cat_dt$date <  tq
       test_idx  <- cat_dt$date == tq
 
@@ -1838,7 +1838,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
   # Historical level data
   hist_lv <- qtrly[, .(cat_label, date, lv=get(ser))]
   hist_lv[, date_num := as.numeric(date)]
-  hist_lv <- hist_lv[!is.na(lv) & date >= zoo::as.yearqtr("2010 Q1")]
+  hist_lv <- hist_lv[!is.na(lv) & date >= as.numeric(zoo::as.yearqtr("2010 Q1"))]
 
   fut_ser[, date_num := as.numeric(date)]
 
@@ -1876,7 +1876,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
       hi95_level=sum(hi95_level,  na.rm=TRUE)),
     by=date]
   if (nrow(fut_tot)==0) next
-  hist_tot <- qtrly[date >= zoo::as.yearqtr("2010 Q1"),
+  hist_tot <- qtrly[date >= as.numeric(zoo::as.yearqtr("2010 Q1")),
     .(lv=sum(get(ser), na.rm=TRUE)), by=date]
   fut_tot[,  date_num := as.numeric(date)]
   hist_tot[, date_num := as.numeric(date)]
@@ -1965,7 +1965,7 @@ make_policy_chart_3b <- function(count_col, title_text, stem) {
 
   # Historical levels from 2005 Q1
   hist_dt <- qtrly[!is.na(get(count_col)) &
-                     date >= zoo::as.yearqtr("2005 Q1"),
+                     date >= as.numeric(zoo::as.yearqtr("2005 Q1")),
                    .(date, cat_label, value = get(count_col))]
   hist_dt[, cat_label := as.character(cat_label)]
 
@@ -2129,17 +2129,17 @@ if (!requireNamespace("patchwork", quietly=TRUE))
 suppressPackageStartupMessages(library(patchwork))
 
 # ── Config ────────────────────────────────────────────────────
-PLOT_START_P11 <- zoo::as.yearqtr("2005 Q1")
+PLOT_START_P11 <- as.numeric(zoo::as.yearqtr("2005 Q1"))
 plot_start_d   <- as.Date(PLOT_START_P11)
-fc_end_d       <- as.Date(FC_END)          # 2030 Q4
+fc_end_d       <- as.Date(zoo::as.yearqtr(FC_END))   # 2030 Q4
 LAST_OBS       <- max(qtrly$date, na.rm = TRUE)
-last_obs_d     <- as.Date(LAST_OBS)
+last_obs_d     <- as.Date(zoo::as.yearqtr(LAST_OBS))
 
 HORIZON_MARKS  <- c(4L, 12L, 20L)         # quarters: 1yr / 3yr / 5yr
 HORIZON_LABS   <- c("1-yr", "3-yr", "5-yr")
 horizon_dates  <- last_obs_d + HORIZON_MARKS * (365.25 / 4)
 
-HORIZON_QTR    <- max(as.integer(round((FC_END - LAST_OBS) * 4)), 20L)
+HORIZON_QTR    <- max(as.integer(round((as.numeric(FC_END) - as.numeric(LAST_OBS)) * 4)), 20L)
 
 p11_dir <- file.path(PLOT_DIR, "P11_forecast_panels")
 if (!dir.exists(p11_dir)) dir.create(p11_dir, recursive = TRUE)
@@ -2183,7 +2183,7 @@ for (sr in names(series_meta_3b)) {
       error = function(e) NULL)
     if (is.null(fc_a)) next
 
-    fc_dates <- LAST_OBS + seq_len(HORIZON_QTR) / 4
+    fc_dates <- as.numeric(LAST_OBS) + seq_len(HORIZON_QTR) / 4
 
     arima_base_list[[key]] <- data.table(
       series      = sr,
