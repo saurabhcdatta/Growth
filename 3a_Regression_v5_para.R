@@ -56,6 +56,12 @@ options(scipen = 999)
 N_CORES <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
 message(sprintf("    Parallel: %d worker cores (of %d physical)",
                 N_CORES, parallel::detectCores(logical = FALSE)))
+PAR_LOG <- file.path(DATA_DIR, "results_3a_v5", "parallel_log.txt")
+if (!dir.exists(dirname(PAR_LOG))) dir.create(dirname(PAR_LOG), recursive = TRUE)
+file.create(PAR_LOG)
+message(sprintf("    Worker log: %s", PAR_LOG))
+message("    TIP: Open a second R console and run:")
+message(sprintf('    con <- file("%s","r"); while(TRUE){x<-readLines(con,n=20); if(length(x))cat(x,sep="\\n"); Sys.sleep(2)}', PAR_LOG))
 
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 &&
                                !is.na(a[1])) a else b
@@ -1187,8 +1193,20 @@ n_models <- nrow(model_tasks)
 message(sprintf("    %d model tasks on %d cores", n_models, N_CORES))
 
 # ── Register parallel backend ─────────────────────────────────
-cl <- makeCluster(N_CORES)
+# outfile="" routes worker cat()/message() to the main R console
+cl <- makeCluster(N_CORES, outfile = "")
 registerDoParallel(cl)
+
+# Per-worker log files for full LASSO/TSCV detail
+LOG_DIR <- file.path(RESULT_DIR, "worker_logs")
+if (!dir.exists(LOG_DIR)) dir.create(LOG_DIR, recursive = TRUE)
+
+# Shared progress file — workers append a line when done;
+# you can watch it live:  file.show("results_3a_v5/progress.log")
+PROGRESS_FILE <- file.path(RESULT_DIR, "progress.log")
+writeLines(sprintf("=== %d models on %d cores  started %s ===",
+                   n_models, N_CORES, format(Sys.time(), "%H:%M:%S")),
+           PROGRESS_FILE)
 
 # Export everything workers need
 worker_env <- environment()
@@ -1214,6 +1232,41 @@ par_results <- foreach(
   cat <- model_tasks$cat[task_i]
   dv_label <- DEP_VARS[[dv]]$label
   dv_short <- DEP_VARS[[dv]]$short
+
+  # Worker log file — captures full detail
+  log_file <- file.path(LOG_DIR, sprintf("model_%02d_%s_%s.log", task_i, dv_short, cat))
+  log_con  <- file(log_file, open = "wt")
+
+  # Helper: write to BOTH log file and console
+  msg <- function(...) {
+    txt <- sprintf(...)
+    writeLines(txt, log_con)
+    flush(log_con)
+    cat(txt, "\n")   # goes to main console via outfile=""
+  }
+
+  msg("[Model %02d/%02d] %s | %s  -- started %s",
+      task_i, n_models, dv_short, cat, format(Sys.time(), "%H:%M:%S"))
+
+  # Redirect message() to log file only (verbose ARIMA internals)
+  sink(log_con, type = "message")
+  on.exit({
+    sink(type = "message")
+    # Write completion to shared progress log
+    tryCatch(
+      write(sprintf("[%s] Model %02d/%02d  %s | %s  DONE",
+                    format(Sys.time(), "%H:%M:%S"), task_i, n_models, dv_short, cat),
+            file = PROGRESS_FILE, append = TRUE),
+      error = function(e) NULL)
+    close(log_con)
+  }, add = TRUE)
+
+  # Redirect worker messages to shared log file
+  log_con <- file(PAR_LOG, open = "a")
+  sink(log_con, type = "message")
+  on.exit({ sink(type = "message"); close(log_con) }, add = TRUE)
+  message(sprintf("    [Model %02d/%02d] %s | %s  -- STARTED on worker %d",
+                  task_i, n_models, dv_short, cat, Sys.getpid()))
 
     cat_dt <- qtrly[cat_label == cat]
     setorderv(cat_dt, "date")
@@ -1623,6 +1676,10 @@ par_results <- foreach(
 toc()  # Parallel model loop
 stopCluster(cl)
 registerDoSEQ()
+
+message(sprintf("\n    Worker logs: %s/", LOG_DIR))
+message(sprintf("    Progress log: %s", PROGRESS_FILE))
+message("    Review any model: cat(readLines('results_3a_v5/worker_logs/model_01_fcu_1_Less_10M.log'), sep='\\n')")
 
 # Collect parallel results
 message("\n    Collecting parallel results...")
