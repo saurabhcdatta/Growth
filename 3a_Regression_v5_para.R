@@ -56,12 +56,6 @@ options(scipen = 999)
 N_CORES <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
 message(sprintf("    Parallel: %d worker cores (of %d physical)",
                 N_CORES, parallel::detectCores(logical = FALSE)))
-PAR_LOG <- file.path(DATA_DIR, "results_3a_v5", "parallel_log.txt")
-if (!dir.exists(dirname(PAR_LOG))) dir.create(dirname(PAR_LOG), recursive = TRUE)
-file.create(PAR_LOG)
-message(sprintf("    Worker log: %s", PAR_LOG))
-message("    TIP: Open a second R console and run:")
-message(sprintf('    con <- file("%s","r"); while(TRUE){x<-readLines(con,n=20); if(length(x))cat(x,sep="\\n"); Sys.sleep(2)}', PAR_LOG))
 
 `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0 &&
                                !is.na(a[1])) a else b
@@ -72,6 +66,14 @@ message(sprintf('    con <- file("%s","r"); while(TRUE){x<-readLines(con,n=20); 
 DATA_DIR   <- "S:/Projects/Credit_Union_Growth_Forecast/Data"
 PLOT_DIR   <- "plots_3a_v5"
 RESULT_DIR <- "results_3a_v5"
+
+# Worker log file for parallel output
+PAR_LOG <- file.path(DATA_DIR, RESULT_DIR, "parallel_log.txt")
+if (!dir.exists(dirname(PAR_LOG))) dir.create(dirname(PAR_LOG), recursive = TRUE)
+file.create(PAR_LOG)
+message(sprintf("    Worker log: %s", PAR_LOG))
+message("    TIP: To watch live in a second R console, run:")
+message(sprintf('    con <- file("%s","r"); while(TRUE){x<-readLines(con,n=20); if(length(x))cat(x,sep="\\n"); Sys.sleep(2)}', PAR_LOG))
 
 DEBUG_MODE    <- TRUE    # FALSE for full production run
 DEBUG_ROLL_Q  <- 6       # quarters to use in debug mode
