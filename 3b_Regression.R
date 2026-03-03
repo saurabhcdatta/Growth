@@ -111,6 +111,13 @@ required <- c("date","categories","cat_label","yoy_ficu_assets_pct","yoy_fiscu_a
 miss <- setdiff(required, names(qtrly))
 if (length(miss) > 0) stop("Missing columns: ", paste(miss, collapse=", "))
 
+# Replace Inf/NaN in dep vars with NA before any modelling
+for (.dc in c("yoy_ficu_assets_pct", "yoy_fiscu_assets_pct")) {
+  if (.dc %in% names(qtrly))
+    qtrly[!is.finite(get(.dc)), (.dc) := NA_real_]
+}
+rm(.dc)
+
 setorderv(qtrly, c("categories","date"))
 all_quarters <- sort(unique(qtrly$date))
 cats         <- sort(unique(qtrly$cat_label))
@@ -636,10 +643,14 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
                     n_valid, min_obs))
 
   y_train_w <- winsorise(y_train)
+  # Guard: if winsorised series is all NA/non-finite, cannot fit ARIMA
+  y_train_w[!is.finite(y_train_w)] <- NA_real_
+  if (sum(!is.na(y_train_w)) < 6L)
+    return(list(ok=FALSE, reason="insufficient finite obs after winsorise"))
 
   # Build ts object
   train_dates <- sort(train_dt$date)
-  min_yq   <- as.numeric(zoo::as.yearqtr(min(train_dates)))
+  min_yq   <- zoo::as.yearqtr(min(train_dates))
   start_yr <- as.integer(format(min_yq, "%Y"))
   start_q  <- as.integer(format(min_yq, "%q"))
   y_ts     <- ts(y_train_w, frequency=4L, start=c(start_yr, start_q))
