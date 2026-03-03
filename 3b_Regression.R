@@ -101,6 +101,10 @@ FC_END <- as.numeric(zoo::as.yearqtr("2030 Q4"))
 # YoY% clamp — hard ceiling on per-quarter forecast
 YOY_CAP <- 25.0          # ±25% — assets swing wider than counts
 
+message(sprintf("[CONFIG] DATA_DIR   = %s", DATA_DIR))
+if (!dir.exists(DATA_DIR))
+  stop("DATA_DIR does not exist: ", DATA_DIR,
+       "\nUpdate DATA_DIR in section 1. CONFIG.")
 setwd(DATA_DIR)
 dir.create(PLOT_DIR,   showWarnings = FALSE, recursive = TRUE)
 dir.create(RESULT_DIR, showWarnings = FALSE, recursive = TRUE)
@@ -109,6 +113,7 @@ dir.create(RESULT_DIR, showWarnings = FALSE, recursive = TRUE)
 # 2. LOAD DATA
 # ════════════════════════════════════════════════════════════
 message("\n[1] Loading qtrly_enriched_v3.rds...")
+message(sprintf("    Working dir: %s", getwd()))
 if (!file.exists("qtrly_enriched_v3.rds"))
   stop("qtrly_enriched_v3.rds not found. Run Part 1 v4 + macro_v4_frb.R first.")
 
@@ -121,9 +126,9 @@ message(sprintf("    Final: %s rows x %s cols",
 # Inline macro merge guard
 if (!"fedfunds" %in% names(qtrly)) {
   message("    [MACRO MERGE] macro columns absent - running inline merge...")
-  macro_rds <- "macro_features_v4.rds"
+  macro_rds <- file.path(DATA_DIR, "macro_features_v4.rds")
   if (!file.exists(macro_rds))
-    stop(paste0("macro_features_v4.rds not found.\nRun macro_v4_frb.R first."))
+    stop(paste0("macro_features_v4.rds not found at:\n  ", macro_rds, "\nRun macro_v4_frb.R from DATA_DIR first."))
   m_mac <- readRDS(macro_rds)
   setDT(m_mac)
   if (!inherits(qtrly$date, "yearqtr")) qtrly[, date := zoo::as.yearqtr(date)]
