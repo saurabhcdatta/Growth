@@ -120,6 +120,18 @@ message(sprintf("    Date range : %s → %s  (%d quarters)",
                 as.character(max(all_quarters)),
                 length(all_quarters)))
 
+# -- DATA LOAD DIAGNOSTIC: what macro_ columns exist? --
+macro_cols_in_data <- grep("^macro_", names(qtrly), value=TRUE)
+message(sprintf("    macro_ columns in panel: %d", length(macro_cols_in_data)))
+if (length(macro_cols_in_data) > 0) {
+  message(sprintf("    Sample: %s", paste(head(macro_cols_in_data, 15), collapse=", ")))
+} else {
+  message("    WARNING: No macro_ columns found in panel!")
+  message("    This means Part 2 macro merge did not run or column prefix was not applied.")
+  message(sprintf("    Available cols (sample): %s", paste(head(names(qtrly), 20), collapse=", ")))
+}
+
+
 # ════════════════════════════════════════════════════════════
 # 3. DEFINE TARGETS AND FEATURES
 # ════════════════════════════════════════════════════════════
@@ -278,6 +290,19 @@ all_num_cols <- names(qtrly)[vapply(qtrly, is.numeric, logical(1))]
 # Macro features: only curated list and their stationary transforms
 macro_feats <- grep(STATIONARY_TRANSFORMS, all_num_cols,
                     value=TRUE, perl=TRUE)
+
+message(sprintf("    [PATTERN DIAG] STATIONARY_TRANSFORMS matched %d cols from %d numeric",
+                length(macro_feats), length(all_num_cols)))
+if (length(macro_feats) == 0) {
+  message("    [PATTERN DIAG] WARNING: Zero matches!")
+  message(sprintf("    Pattern (first 200 chars): %s", substr(STATIONARY_TRANSFORMS, 1, 200)))
+  message(sprintf("    Sample numeric cols: %s", paste(head(all_num_cols, 20), collapse=", ")))
+  simple_test <- grep("^macro_", all_num_cols, value=TRUE)
+  message(sprintf("    Simple ^macro_ grep: %d matches", length(simple_test)))
+  if (length(simple_test) > 0)
+    message(sprintf("    Sample: %s", paste(head(simple_test, 10), collapse=", ")))
+}
+
 
 # Drop any column whose variance is near zero (constant/near-constant)
 # — these survive the pattern match but add no signal
