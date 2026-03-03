@@ -1140,7 +1140,7 @@ for (dv in names(DEP_VARS)) {
     min_train_cat <- if (cat %in% SPARSE_CATS) TSCV_MIN_TRAIN_SPARSE else TSCV_MIN_TRAIN
 
     for (tq in test_quarters) {
-      train_idx <- cat_dt$date >= as.numeric(zoo::as.yearqtr("2005 Q1")) &
+      train_idx <- cat_dt$date >= zoo::as.yearqtr("2005 Q1") &
                    cat_dt$date <  tq
       test_idx  <- cat_dt$date == tq
 
@@ -1588,7 +1588,7 @@ level_ficu  <- make_level_fc("yoy_ficu_assets_pct",  "ficu_assets")
 level_fiscu <- make_level_fc("yoy_fiscu_assets_pct", "fiscu_assets")
 
 level_fc <- rbindlist(list(level_ficu, level_fiscu), fill=TRUE)
-level_fc[, date := zoo::as.yearqtr(as.numeric(date))]
+level_fc[, date := as.numeric(date)]
 
 # Level-space OOS metrics
 level_metrics <- level_fc[!is.na(actual_level) & !is.na(pred_level),
@@ -1716,7 +1716,7 @@ for (key in names(all_fits)) {
 }
 
 future_fc <- rbindlist(future_rows, fill=TRUE)
-future_fc[, date := zoo::as.yearqtr(as.numeric(date))]
+future_fc[, date := as.numeric(date)]
 fwrite(future_fc, file.path(RESULT_DIR, "future_forecast_3b.csv"))
 message(sprintf("    Future forecast rows: %d", nrow(future_fc)))
 
@@ -1849,7 +1849,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
   # Historical level data
   hist_lv <- qtrly[, .(cat_label, date, lv=get(ser))]
   hist_lv[, date_num := as.numeric(date)]
-  hist_lv <- hist_lv[!is.na(lv) & date >= as.numeric(zoo::as.yearqtr("2010 Q1"))]
+  hist_lv <- hist_lv[!is.na(lv) & date >= zoo::as.yearqtr("2010 Q1")]
 
   fut_ser[, date_num := as.numeric(date)]
 
@@ -1887,7 +1887,7 @@ for (ser in c("ficu_assets","fiscu_assets")) {
       hi95_level=sum(hi95_level,  na.rm=TRUE)),
     by=date]
   if (nrow(fut_tot)==0) next
-  hist_tot <- qtrly[date >= as.numeric(zoo::as.yearqtr("2010 Q1")),
+  hist_tot <- qtrly[date >= zoo::as.yearqtr("2010 Q1"),
     .(lv=sum(get(ser), na.rm=TRUE)), by=date]
   fut_tot[,  date_num := as.numeric(date)]
   hist_tot[, date_num := as.numeric(date)]
@@ -1976,7 +1976,7 @@ make_policy_chart_3b <- function(count_col, title_text, stem) {
 
   # Historical levels from 2005 Q1
   hist_dt <- qtrly[!is.na(get(count_col)) &
-                     date >= as.numeric(zoo::as.yearqtr("2005 Q1")),
+                     date >= zoo::as.yearqtr("2005 Q1"),
                    .(date, cat_label, value = get(count_col))]
   hist_dt[, cat_label := as.character(cat_label)]
 
@@ -2140,7 +2140,7 @@ if (!requireNamespace("patchwork", quietly=TRUE))
 suppressPackageStartupMessages(library(patchwork))
 
 # ── Config ────────────────────────────────────────────────────
-PLOT_START_P11 <- as.numeric(zoo::as.yearqtr("2005 Q1"))
+PLOT_START_P11 <- zoo::as.yearqtr("2005 Q1")
 plot_start_d   <- as.Date(PLOT_START_P11)
 fc_end_d       <- as.Date(zoo::as.yearqtr(FC_END))   # 2030 Q4
 LAST_OBS       <- max(qtrly$date, na.rm = TRUE)
@@ -2177,17 +2177,31 @@ for (sr in names(series_meta_3b)) {
   for (cat in cats) {
     key      <- paste(sr, cat, sep = "|")
     cat_hist <- qtrly[cat_label == cat & date >= PLOT_START_P11 &
-                        !is.na(get(hcol))]
+                        !is.na(get(hcol)) & is.finite(get(hcol)) & get(hcol) > 0]
     setorderv(cat_hist, "date")
     if (nrow(cat_hist) < 12L) next
 
-    y_ts <- ts(cat_hist[[hcol]], frequency = 4L, start = c(2005L, 1L))
+    y_raw <- as.numeric(cat_hist[[hcol]])
+    y_raw[!is.finite(y_raw)] <- NA_real_
+    if (sum(!is.na(y_raw)) < 12L) {
+      message(sprintf("        [P11 SKIP ARIMA] %s | %s — only %d finite obs",
+                      sr, cat, sum(!is.na(y_raw))))
+      next
+    }
+    # Use start year/quarter from actual data range
+    min_yq_h <- zoo::as.yearqtr(min(cat_hist$date, na.rm = TRUE))
+    y_ts <- ts(y_raw, frequency = 4L,
+               start = c(as.integer(format(min_yq_h, "%Y")),
+                         as.integer(format(min_yq_h, "%q"))))
 
     fit_a <- tryCatch(
       forecast::auto.arima(y_ts, stepwise = TRUE, approximation = TRUE,
                            max.p = 3L, max.q = 2L, max.P = 1L, max.Q = 1L),
       error = function(e) NULL)
-    if (is.null(fit_a)) next
+    if (is.null(fit_a)) {
+      message(sprintf("        [P11 ARIMA FAIL] %s | %s", sr, cat))
+      next
+    }
 
     fc_a <- tryCatch(
       forecast::forecast(fit_a, h = HORIZON_QTR, level = 95),
@@ -2215,6 +2229,11 @@ arima_base_all <- if (length(arima_base_list) > 0) {
                     data.table()
                   }
 message(sprintf("    Pure ARIMA benchmark: %d models fitted", length(arima_base_list)))
+if (length(arima_base_list) > 0) {
+  message(sprintf("    Keys: %s", paste(names(arima_base_list), collapse=", ")))
+} else {
+  message("    [WARN] arima_base_list is empty — green lines will not appear in P11")
+}
 
 # ── Build 7-panel patchwork per series ───────────────────────
 for (sr in names(series_meta_3b)) {
@@ -2230,12 +2249,12 @@ for (sr in names(series_meta_3b)) {
   # ARIMAX-TSCV rolling OOS (evaluation window)
   oos_dt <- level_fc[series == sr & !is.na(pred_level),
                      .(cat_label, date, pred_level, lo95_level, hi95_level)]
-  oos_dt[, date_d := as.Date(date)]
+  oos_dt[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
   # ARIMAX-TSCV future forecast
   fut_dt <- future_fc[series == sr & !is.na(pred_level),
                       .(cat_label, date, pred_level, lo95_level, hi95_level)]
-  fut_dt[, date_d := as.Date(date)]
+  fut_dt[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
   # Pure ARIMA benchmark
   ar_dt <- if (nrow(arima_base_all) > 0) {
@@ -2243,7 +2262,7 @@ for (sr in names(series_meta_3b)) {
           } else {
               data.table()
           }
-  if (nrow(ar_dt) > 0) ar_dt[, date_d := as.Date(date)]
+  if (nrow(ar_dt) > 0) ar_dt[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
   panel_plots <- list()
 
@@ -2407,8 +2426,8 @@ for (sr in names(series_meta_3b)) {
 
   # ── ARIMAX-TSCV future levels ─────────────────────────────
   arimax_hm <- future_fc[series == sr & !is.na(pred_level),
-                          .(cat_label, date, value = pred_level)]
-  arimax_hm[, date_d    := as.Date(date)]
+                          .(cat_label, date = as.numeric(date), value = pred_level)]
+  arimax_hm[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
   arimax_hm[, label_txt := fmt_cell(value)]
 
   arimax_hm_full <- rbindlist(list(
@@ -2418,12 +2437,12 @@ for (sr in names(series_meta_3b)) {
   # ── Pure ARIMA benchmark levels ───────────────────────────
   ar_hm <- if (nrow(arima_base_all) > 0) {
               arima_base_all[series == sr & !is.na(arima_point),
-                              .(cat_label, date, value = arima_point)]
+                              .(cat_label, date = as.numeric(date), value = arima_point)]
           } else {
               data.table()
           }
   if (nrow(ar_hm) > 0) {
-    ar_hm[, date_d    := as.Date(date)]
+    ar_hm[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
     ar_hm[, label_txt := fmt_cell(value)]
   }
 
@@ -2446,7 +2465,7 @@ for (sr in names(series_meta_3b)) {
     by = c("cat_label", "date"), all = TRUE)
   diff_hm[, value     := arimax_val - arima_val]
   diff_hm[, label_txt := fmt_cell(value)]
-  diff_hm[, date_d    := as.Date(date)]
+  diff_hm[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
   # Category factor (largest category at top)
   cat_order <- rev(sort(unique(
@@ -3313,7 +3332,7 @@ if (nrow(arima_base_all) == 0) {
     if (nrow(ar_sub) == 0) {
       message(sprintf("    [P16 SKIP] %s — no data", sr)); next
     }
-    ar_sub[, date_d := as.Date(date)]
+    ar_sub[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
     cat_order <- rev(sort(unique(ar_sub$cat_label)))
 
