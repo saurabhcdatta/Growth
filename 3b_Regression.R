@@ -1060,24 +1060,37 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
   }
   in_final_macro <- sig_vars[!grepl(exit_and_arima_pat, sig_vars, perl=TRUE)]
 
+  # Full macro LASSO tracking for screen print
+  lasso_macro_all <- lasso_macro_candidates  # all macro vars with nonzero LASSO coef
+  lasso_macro_coefs <- if (length(lasso_macro_all) > 0L)
+    setNames(as.numeric(lasso_coef[lasso_macro_all, 1L]), lasso_macro_all)
+  else numeric(0)
+  # Classify each macro var's fate through the pipeline
+  tscv_dropped_macro <- setdiff(lasso_macro_all, sig_vars)  # LASSO selected but TSCV dropped
+  tscv_dropped_macro <- tscv_dropped_macro[
+    !grepl(exit_and_arima_pat, tscv_dropped_macro, perl=TRUE)]
+
   list(
-    ok               = TRUE,
-    pred_final       = pred_final,
-    pred_lo95        = pred_lo95,
-    pred_hi95        = pred_hi95,
-    method_used      = "ARIMAX_TSCV",
-    sig_vars         = sig_vars,
-    coef_dt          = coef_dt,
-    arimax_fit       = arimax_final,
-    arima_order      = arima_order_vec,
-    adj_r2           = adj_r2,
-    tscv_rmse        = best_rmse,
-    n_train          = n_obs,
-    n_lasso_sel      = length(selected),
-    n_final          = length(sig_vars),
-    lasso_macro_top  = lasso_macro_top,   # top LASSO macro vars (even if TSCV dropped)
-    in_final_macro   = in_final_macro,    # macro vars that survived into final model
-    X_train          = X_train            # passed to screen print for LASSO diag
+    ok                   = TRUE,
+    pred_final           = pred_final,
+    pred_lo95            = pred_lo95,
+    pred_hi95            = pred_hi95,
+    method_used          = "ARIMAX_TSCV",
+    sig_vars             = sig_vars,
+    coef_dt              = coef_dt,
+    arimax_fit           = arimax_final,
+    arima_order          = arima_order_vec,
+    adj_r2               = adj_r2,
+    tscv_rmse            = best_rmse,
+    n_train              = n_obs,
+    n_lasso_sel          = length(selected),
+    n_final              = length(sig_vars),
+    lasso_macro_top      = lasso_macro_top,      # top 5 by LASSO magnitude
+    lasso_macro_all      = lasso_macro_all,      # ALL macro vars with nonzero LASSO coef
+    lasso_macro_coefs    = lasso_macro_coefs,    # named vector of LASSO coefs for macro
+    tscv_dropped_macro   = tscv_dropped_macro,   # LASSO-selected but TSCV-eliminated
+    in_final_macro       = in_final_macro,       # survived all the way to final model
+    X_train              = X_train               # passed to screen print for LASSO diag
   )
 }
 
@@ -1445,50 +1458,83 @@ for (dv in names(DEP_VARS)) {
         }
       }
 
-      # ── Macro variable note ───────────────────────────────────
-      cat(sprintf("\n  MACRO VAR SUMMARY:\n"))
-      # Classify: which macro vars survived into final model?
-      if (!is.null(cd) && nrow(cd) > 0) {
-        exit_pat       <- paste0("^(", paste(c(EXIT_VARS, EXIT_VARS_RAW), collapse="|"), ")")
-        macro_in_model <- cd$variable[
-                            !cd$variable %in% EXIT_VARS &
-                            !grepl(exit_pat, cd$variable, perl=TRUE) &
-                            !grepl("^(ar|ma|sar|sma)[0-9]+$|intercept|drift|mean",
-                                   cd$variable)]
-        if (length(macro_in_model) > 0) {
-          cat(sprintf("    In final model (%d): %s\n",
-                      length(macro_in_model),
-                      paste(macro_in_model, collapse=", ")))
-          # Which are significant?
-          macro_sig <- cd[cd$variable %in% macro_in_model & !is.na(cd$p_value) &
-                            cd$p_value < SIG_LEVEL, variable]
-          macro_ns  <- setdiff(macro_in_model, macro_sig)
-          if (length(macro_sig) > 0)
-            cat(sprintf("    Significant (p<%s): %s\n", SIG_LEVEL,
-                        paste(macro_sig, collapse=", ")))
-          if (length(macro_ns) > 0)
-            cat(sprintf("    Not significant : %s\n", paste(macro_ns, collapse=", ")))
-        } else {
-          cat("    No macro variables in final model.\n")
-          cat(sprintf("    Curated macro base vars : %d\n", length(CURATED_MACRO)))
-          cat(sprintf("    Macro feats in FEATS_ALL: %d (incl. transforms)\n",
-                      length(macro_feats)))
-          avail_m <- if (!is.null(last_res$X_train)) length(intersect(macro_feats, colnames(last_res$X_train))) else 0L
-          cat(sprintf("    Macro feats into LASSO  : %d\n", avail_m))
-          if (avail_m == 0L) {
-            cat("    >>> ALL macro vars dropped by prep_X (missingness/variance filter)\n")
-            cat("        Check FRB forward panel coverage for this category.\n")
+      # ── Macro variable note ─────────────────────────────────
+      cat(sprintf("\n  MACRO VAR SUMMARY (LASSO pipeline):\n"))
+      cat(sprintf("  %s\n", strrep("-", 74)))
+
+      # Recover full tracking from last_res
+      lasso_mac_all   <- last_res$lasso_macro_all   %||% character(0)
+      lasso_mac_coefs <- last_res$lasso_macro_coefs %||% numeric(0)
+      tscv_drop_mac   <- last_res$tscv_dropped_macro %||% character(0)
+      final_mac       <- last_res$in_final_macro     %||% character(0)
+
+      # Get p-values and estimates from coef table for final macro vars
+      get_coef_row <- function(vname) {
+        if (is.null(cd) || nrow(cd) == 0) return(NULL)
+        r <- cd[cd$variable == vname]
+        if (nrow(r) == 0) return(NULL)
+        r[1]
+      }
+
+      # Classify every candidate macro var and print one row per var
+      # exactly like the exit var summary
+      avail_m <- if (!is.null(last_res$X_train))
+        length(intersect(macro_feats, colnames(last_res$X_train))) else 0L
+
+      cat(sprintf("  Macro features into LASSO : %d  |  LASSO-selected (nonzero): %d  |  Final model: %d\n",
+                  avail_m, length(lasso_mac_all), length(final_mac)))
+      cat(sprintf("  %s\n", strrep("-", 74)))
+
+      if (is_pure_arima) {
+        cat("    [PURE ARIMA — no xreg, all macro absent]\n")
+      } else if (avail_m == 0L) {
+        cat("    >>> ALL macro vars dropped by prep_X before LASSO\n")
+        cat("        (check FRB forward panel coverage for this category)\n")
+      } else if (length(lasso_mac_all) == 0L) {
+        cat("    LASSO zeroed all macro vars — none entered TSCV stage\n")
+      } else {
+        # Header row
+        cat(sprintf("  %-34s  %-10s  %-12s  %-8s  %-8s  %s\n",
+                    "Macro Variable", "LASSO coef", "Estimate", "p-value",
+                    "Sig", "Stage reached"))
+        cat(sprintf("  %s\n", strrep("-", 92)))
+
+        # All macro vars that had nonzero LASSO coef — sorted by |LASSO coef|
+        sorted_mac <- if (length(lasso_mac_coefs) > 0)
+          names(sort(abs(lasso_mac_coefs), decreasing=TRUE))
+        else lasso_mac_all
+
+        for (mv in sorted_mac) {
+          lc  <- if (mv %in% names(lasso_mac_coefs))
+                   lasso_mac_coefs[[mv]] else NA_real_
+          lc_s <- if (is.finite(lc)) sprintf("%+.4f", lc) else "     NA"
+
+          if (mv %in% final_mac) {
+            # ── Survived all the way to final model ──────────────
+            cr <- get_coef_row(mv)
+            est <- if (!is.null(cr)) cr$estimate %||% NA_real_ else NA_real_
+            pv  <- if (!is.null(cr)) cr$p_value  %||% NA_real_ else NA_real_
+            est_s <- if (is.finite(est)) sprintf("%+.4f", est) else "      NA"
+            pv_s  <- if (is.finite(pv))  sprintf("%.4f",  pv)  else "    NA"
+            sig_s <- if (is.finite(pv) && pv < SIG_LEVEL) {
+              if (pv < 0.001) "*** " else if (pv < 0.01) "**  " else "*   "
+            } else if (is.finite(pv)) ".   " else "    "
+            stage <- "[FINAL MODEL]"
+          } else if (mv %in% tscv_drop_mac) {
+            # ── LASSO selected, TSCV eliminated ──────────────────
+            est_s <- "      --"; pv_s <- "    --"; sig_s <- "    "
+            stage <- "[LASSO only — TSCV eliminated]"
           } else {
-            cat("    Possible reasons macro absent from final model:\n")
-            cat("      (a) LASSO zeroed all macro coefficients\n")
-            cat("          -> macro adds no in-sample predictive power vs exit rates\n")
-            cat("      (b) TSCV elimination dropped macro (OOS RMSE did not improve)\n")
-            cat("          -> pure ARIMA + exit rates dominated at this forecast horizon\n")
-            if (!is.null(last_res$lasso_macro_top) && length(last_res$lasso_macro_top)>0L)
-              cat(sprintf("      Top LASSO-scored macro (did not survive TSCV): %s\n",
-                          paste(last_res$lasso_macro_top, collapse=", ")))
+            # ── LASSO selected but dropped for another reason ─────
+            est_s <- "      --"; pv_s <- "    --"; sig_s <- "    "
+            stage <- "[selected but dropped]"
           }
+
+          cat(sprintf("  %-34s  %10s  %12s  %8s  %4s  %s\n",
+                      mv, lc_s, est_s, pv_s, sig_s, stage))
         }
+        cat(sprintf("  %s\n", strrep("-", 92)))
+        cat("  Stage key: [FINAL MODEL]=survived LASSO+TSCV+gate  [LASSO only]=TSCV eliminated\n")
       }
 
       # ── OOS performance note ──────────────────────────────────
@@ -2243,8 +2289,8 @@ for (sr in names(series_meta_3b)) {
 
   # Historical actuals
   hist_dt <- qtrly[date >= PLOT_START_P11 & !is.na(get(hcol)),
-                   .(date, cat_label, actual = get(hcol))]
-  hist_dt[, date_d := as.Date(date)]
+                   .(date = as.numeric(date), cat_label, actual = get(hcol))]
+  hist_dt[, date_d := as.Date(zoo::as.yearqtr(as.numeric(date)))]
 
   # ARIMAX-TSCV rolling OOS (evaluation window)
   oos_dt <- level_fc[series == sr & !is.na(pred_level),
@@ -2420,8 +2466,8 @@ for (sr in names(series_meta_3b)) {
 
   # Last observed actual — anchor column in both panels
   last_actual_dt <- qtrly[date == LAST_OBS & !is.na(get(hcol)),
-                           .(cat_label, date, value = get(hcol))]
-  last_actual_dt[, date_d    := as.Date(date)]
+                           .(cat_label, date = as.numeric(date), value = get(hcol))]
+  last_actual_dt[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
   last_actual_dt[, label_txt := fmt_cell(value)]
 
   # ── ARIMAX-TSCV future levels ─────────────────────────────
@@ -2430,9 +2476,9 @@ for (sr in names(series_meta_3b)) {
   arimax_hm[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
   arimax_hm[, label_txt := fmt_cell(value)]
 
-  arimax_hm_full <- rbindlist(list(
+  arimax_hm_full <- safe_rbind(
     last_actual_dt[, .(cat_label, date, date_d, value, label_txt)],
-    arimax_hm), fill = TRUE)
+    arimax_hm)
 
   # ── Pure ARIMA benchmark levels ───────────────────────────
   ar_hm <- if (nrow(arima_base_all) > 0) {
@@ -2447,9 +2493,9 @@ for (sr in names(series_meta_3b)) {
   }
 
   ar_hm_full <- if (nrow(ar_hm) > 0) {
-    rbindlist(list(
+    safe_rbind(
       last_actual_dt[, .(cat_label, date, date_d, value, label_txt)],
-      ar_hm), fill = TRUE)
+      ar_hm)
   } else {
     data.table()
   }
@@ -3324,8 +3370,8 @@ if (nrow(arima_base_all) == 0) {
 
     # Last observed actual — anchor column
     last_act <- qtrly[date == LAST_OBS & !is.na(get(hcol)),
-                       .(cat_label, date, value = get(hcol))]
-    last_act[, date_d    := as.Date(date)]
+                       .(cat_label, date = as.numeric(date), value = get(hcol))]
+    last_act[, date_d    := as.Date(zoo::as.yearqtr(as.numeric(date)))]
     last_act[, label_txt := fmt_cell(value)]
 
     ar_sub <- arima_base_all[series == sr]
@@ -3344,7 +3390,7 @@ if (nrow(arima_base_all) == 0) {
       # Prepend anchor column
       anch <- last_act[cat_label %in% dt$cat_label,
                         .(cat_label, date_d, value, label_txt)]
-      dt_full <- rbindlist(list(anch, dt), fill=TRUE)
+      dt_full <- safe_rbind(anch, dt)
       dt_full[, cat_f := factor(cat_label, levels=cat_order)]
 
       vr  <- range(dt_full$value, na.rm=TRUE)
