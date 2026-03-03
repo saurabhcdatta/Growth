@@ -2619,7 +2619,7 @@ for (sr in names(series_meta_3b)) {
   hcol  <- sm$hist_col
 
   fmt_cell <- function(x)
-    ifelse(is.na(x), "", scales::comma(round(x)))
+    ifelse(is.na(x), "", sprintf("$%.1fB", x / 1e9))
 
   # Last observed actual — anchor column in both panels
   last_actual_dt <- qtrly[date == LAST_OBS & !is.na(get(hcol)),
@@ -2679,6 +2679,9 @@ for (sr in names(series_meta_3b)) {
     ar_hm_full[, cat_f := factor(cat_label, levels = cat_order)]
   diff_hm[, cat_f := factor(cat_label, levels = cat_order)]
 
+  # Billions formatter for legend scale
+  fmt_billions <- function(x) ifelse(is.na(x), "", sprintf("$%.0fB", x / 1e9))
+
   # Heatmap tile builder
   make_hm_tile <- function(dt, title_txt, diverging = FALSE) {
     if (nrow(dt) == 0)
@@ -2694,17 +2697,17 @@ for (sr in names(series_meta_3b)) {
       scale_fill_gradient2(low     = "#2166ac", mid = "#f7f7f7",
                            high    = "#d6604d", midpoint = 0,
                            na.value = "grey85", name = label,
-                           labels  = scales::comma)
+                           labels  = fmt_billions)
     } else {
       scale_fill_gradient(low      = "#deebf7", high = "#08306b",
                           na.value = "grey85",  name = label,
-                          labels   = scales::comma)
+                          labels   = fmt_billions)
     }
 
     ggplot(dt, aes(x = date_d, y = cat_f, fill = value)) +
       geom_tile(colour = "white", linewidth = 0.25) +
       geom_text(aes(label = label_txt, colour = text_col),
-                size = 2.3, fontface = "plain") +
+                size = 2.8, fontface = "plain") +
       fill_sc +
       scale_colour_identity() +
       scale_x_date(date_labels = "%Y-Q%q",
@@ -3624,7 +3627,11 @@ if (nrow(arima_base_all) == 0) {
     label <- sm$label
     hcol  <- sm$hist_col
 
-    fmt_cell <- function(x) ifelse(is.na(x), "", scales::comma(round(x)))
+    fmt_cell <- function(x) ifelse(is.na(x), "",
+                   sprintf("$%.1fB", x / 1e9))
+
+    # Billions formatter for legend scale
+    fmt_billions <- function(x) ifelse(is.na(x), "", sprintf("$%.0fB", x / 1e9))
 
     last_act <- qtrly[date == LAST_OBS & !is.na(get(hcol)),
                        .(cat_label, date, value = get(hcol))]
@@ -3652,10 +3659,10 @@ if (nrow(arima_base_all) == 0) {
       ggplot(dt_full, aes(x=date_d, y=cat_f, fill=value)) +
         geom_tile(colour="white", linewidth=0.25) +
         geom_text(aes(label=label_txt, colour=text_col),
-                  size=2.3, fontface="plain") +
+                  size=2.8, fontface="plain") +
         scale_fill_gradient(low="#deebf7", high="#08306b",
                             na.value="grey85", name=label,
-                            labels=scales::comma) +
+                            labels=fmt_billions) +
         scale_colour_identity() +
         scale_x_date(date_labels="%Y-Q%q", date_breaks="1 year",
                      expand=expansion(mult=c(0.01,0.01))) +
