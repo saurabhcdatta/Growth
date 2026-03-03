@@ -318,17 +318,56 @@ frb_raw <- frb_raw[!is.na(date)]
 setorderv(frb_raw, "date")
 
 # ---- Rename via VAR_MAP --------------------------------------
+# R's read.csv / fread can mangle column names by appending "..N"
+# (e.g., "GDPS" becomes "GDPS..13"). We match on the base name
+# (stripping any trailing "..digits" suffix) so the rename works
+# regardless of column position in the original FRB Excel file.
 n_renamed <- 0L
-for (old_nm in intersect(names(frb_raw), names(VAR_MAP))) {
-  new_nm <- VAR_MAP[[old_nm]]
-  if (new_nm %in% names(frb_raw) && new_nm != old_nm) {
-    message(sprintf("    SKIP '%s'->'%s': target already exists", old_nm, new_nm))
-    next
-  }
-  setnames(frb_raw, old_nm, new_nm)
-  n_renamed <- n_renamed + 1L
+raw_cols  <- names(frb_raw)
+
+# Pre-rename diagnostic
+message(sprintf("    Pre-rename: %d cols | Sample: %s",
+                length(raw_cols), paste(head(raw_cols, 12), collapse=", ")))
+stripped_test <- gsub("\\.+[0-9]+$", "", raw_cols)
+strip_hits <- intersect(names(VAR_MAP), stripped_test)
+message(sprintf("    VAR_MAP matches after dot-strip: %d / %d",
+                length(strip_hits), length(VAR_MAP)))
+if (length(strip_hits) == 0) {
+  message("    >>> Zero matches! Showing cols with RFF/GDPS/LURC pattern:")
+  message(sprintf("    %s",
+           paste(raw_cols[grepl("^(RFF|GDPS|LURC|RS10Y|PCPI)", raw_cols)], collapse=", ")))
 }
-message(sprintf("    Renamed   : %d variables", n_renamed))
+
+
+# Build lookup: strip "..digits" suffix from actual column names
+# Handle any dot+digit suffix (.13, ..13, X.1, etc.)
+base_names <- gsub("\\.+[0-9]+$", "", raw_cols)
+
+for (i in seq_along(raw_cols)) {
+  bn <- base_names[i]
+  if (bn %in% names(VAR_MAP)) {
+    new_nm <- VAR_MAP[[bn]]
+    if (new_nm %in% names(frb_raw) && new_nm != raw_cols[i]) {
+      message(sprintf("    SKIP '%s'->'%s': target already exists", raw_cols[i], new_nm))
+      next
+    }
+    setnames(frb_raw, raw_cols[i], new_nm)
+    n_renamed <- n_renamed + 1L
+  }
+}
+message(sprintf("    Renamed   : %d variables (VAR_MAP has %d entries)",
+                n_renamed, length(VAR_MAP)))
+
+
+# Post-rename diagnostic: confirm curated base names exist
+curated_base_check <- c("fedfunds", "gs3m", "gs10", "gs30", "mortgage30",
+                         "unrate", "gdp_real", "baa_spread", "cpi",
+                         "hpi_fed", "fwd_1y1y")
+found_cb <- intersect(curated_base_check, names(frb_raw))
+miss_cb  <- setdiff(curated_base_check, names(frb_raw))
+message(sprintf("    Curated base check: %d/%d found", length(found_cb), length(curated_base_check)))
+if (length(miss_cb) > 0)
+  message(sprintf("    MISSING after rename: %s", paste(miss_cb, collapse=", ")))
 
 # ---- Coerce to numeric (skip date) ---------------------------
 val_cols <- setdiff(names(frb_raw), "date")
