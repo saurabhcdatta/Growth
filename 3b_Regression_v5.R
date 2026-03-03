@@ -98,14 +98,38 @@ if (!file.exists("modeling_panel_v5.rds"))
 qtrly <- readRDS("modeling_panel_v5.rds")
 setDT(qtrly)
 
-# ── Strip haven_labelled class from all columns ──────────────
-# Some columns may carry haven_labelled class from SPSS/SAS/Stata
-# imports via the haven package. This causes median(), var(), and
-# other base R functions to fail. Convert to plain numeric/character.
-for (cn in names(qtrly)) {
-  if (inherits(qtrly[[cn]], "haven_labelled")) {
-    qtrly[[cn]] <- as.numeric(qtrly[[cn]])
+# ── Strip ALL label/haven classes from every column ──────────
+# The haven package attaches "haven_labelled", "haven_labelled_spss",
+# or "labelled" classes to imported columns.  These break base R
+# functions like median(), var(), quantile(), cor().
+# We strip them aggressively here:
+#   1. If haven is available, use zap_labels() (cleanest method)
+#   2. Otherwise, manually strip class and attributes
+if (requireNamespace("haven", quietly = TRUE)) {
+  qtrly <- as.data.table(haven::zap_labels(qtrly))
+  message("    [HAVEN] zap_labels() applied to all columns")
+} else {
+  for (cn in names(qtrly)) {
+    col <- qtrly[[cn]]
+    if (inherits(col, c("haven_labelled", "haven_labelled_spss", "labelled"))) {
+      # Preserve underlying type: numeric stays numeric, character stays character
+      if (is.numeric(col)) {
+        set(qtrly, j = cn, value = as.numeric(col))
+      } else {
+        set(qtrly, j = cn, value = as.character(col))
+      }
+    }
   }
+  message("    [HAVEN] Manual label stripping applied")
+}
+
+# Double-check: force-strip any remaining labelled attributes that
+# survived (e.g. "label", "labels", "format.stata" attrs on plain vectors)
+for (cn in names(qtrly)) {
+  if (!is.null(attr(qtrly[[cn]], "label")))  attr(qtrly[[cn]], "label")  <- NULL
+  if (!is.null(attr(qtrly[[cn]], "labels"))) attr(qtrly[[cn]], "labels") <- NULL
+  if (!is.null(attr(qtrly[[cn]], "format.stata"))) attr(qtrly[[cn]], "format.stata") <- NULL
+  if (!is.null(attr(qtrly[[cn]], "format.spss")))  attr(qtrly[[cn]], "format.spss")  <- NULL
 }
 
 message(sprintf("    %s rows × %s cols",
@@ -481,7 +505,16 @@ get_xreg_names <- function(fit) {
 prep_X <- function(dt, feats, corr_cut=0.92, min_nonmiss=0.70) {
   cols <- intersect(feats, names(dt))
   if (length(cols) == 0) return(NULL)
-  mat <- as.matrix(dt[, cols, with=FALSE])
+  # Force all columns to plain numeric before creating matrix
+  # (guards against haven_labelled surviving into feature matrix)
+  dt_clean <- dt[, cols, with=FALSE]
+  for (cc in names(dt_clean)) {
+    if (!is.numeric(dt_clean[[cc]]) || inherits(dt_clean[[cc]], "labelled")) {
+      set(dt_clean, j = cc, value = as.numeric(dt_clean[[cc]]))
+    }
+  }
+  mat <- as.matrix(dt_clean)
+  storage.mode(mat) <- "double"  # ensure plain numeric matrix
   # Drop near-constant or high-missing columns
   ok_miss <- apply(mat, 2, function(x) mean(!is.na(x)) >= min_nonmiss)
   ok_var  <- apply(mat, 2, function(x) var(x, na.rm=TRUE) > 1e-10)
@@ -910,7 +943,7 @@ fit_window_3b <- function(train_dt, test_row, dep_var, feats,
 
   # Build training medians for test-row imputation
   train_meds <- setNames(
-    lapply(x_train_cols, function(cn) median(X_train[,cn], na.rm=TRUE)),
+    lapply(x_train_cols, function(cn) median(as.numeric(X_train[,cn]), na.rm=TRUE)),
     x_train_cols)
 
   # Build xreg matrix helper
@@ -1744,8 +1777,9 @@ for (key in names(all_fits)) {
   cat_train  <- qtrly[cat_label==cat_lbl & date <= obj$date_end]
   num_cols_t <- names(cat_train)[vapply(names(cat_train),
                  function(cn) is.numeric(cat_train[[cn]]), logical(1))]
+  # Safe median: force as.numeric() to handle any residual haven_labelled vectors
   train_meds <- setNames(
-    lapply(num_cols_t, function(cn) median(cat_train[[cn]], na.rm=TRUE)),
+    lapply(num_cols_t, function(cn) median(as.numeric(cat_train[[cn]]), na.rm=TRUE)),
     num_cols_t)
 
   # Build h-step xreg matrix
