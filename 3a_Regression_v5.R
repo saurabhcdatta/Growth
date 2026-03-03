@@ -234,30 +234,43 @@ CURATED_MACRO <- c(
 
 # Stationary transforms to include for each curated macro var.
 # Patterns cover:
-#   ^fedfunds$          raw level (already stationary — rates/spreads)
-#   ^yoy_fedfunds$      year-on-year % change prefix
-#   ^fedfunds_yoy$      year-on-year % change suffix (alt naming)
-#   ^qoq_fedfunds$      quarter-on-quarter % change
-#   ^fedfunds_lag4$     lag transforms (lag1, lag4, lag8 etc.)
-#   ^fedfunds_rmean4$   rolling mean transforms
-#   ^fedfunds_rsd4$     rolling SD transforms
-#   ^fedfunds_chg$      first-difference version
-#   ^fedfunds_cyc$      cyclical deviation
-cm_pat <- paste(CURATED_MACRO, collapse="|")
+# Pattern matching for macro columns from Part 2 v5:
+# Part 2 names all columns as macro_{base} with FE transforms:
+#   macro_fedfunds           raw level
+#   macro_yoy_fedfunds       YoY % change (yoy_ inside macro_ prefix)
+#   macro_qoq_fedfunds       QoQ % change
+#   macro_fedfunds_lag1      lagged levels
+#   macro_fedfunds_rmean4    rolling mean
+#   macro_fedfunds_rsd4      rolling SD
+#   macro_fedfunds_cyc       cyclical deviation
+#   macro_yoy_fedfunds_accel YoY acceleration
+
+# Strip 'macro_' prefix to get base names for pattern building
+CURATED_BASE <- gsub("^macro_", "", CURATED_MACRO)
+base_pat <- paste(CURATED_BASE, collapse="|")
+
 STATIONARY_TRANSFORMS <- paste(
-  paste0("^(", cm_pat, ")$"),               # raw level
-  paste0("^yoy_(", cm_pat, ")$"),            # yoy_ prefix
-  paste0("^(", cm_pat, ")_yoy$"),            # _yoy suffix
-  paste0("^qoq_(", cm_pat, ")$"),            # qoq_ prefix
-  paste0("^(", cm_pat, ")_qoq$"),            # _qoq suffix
-  paste0("^(", cm_pat, ")_lag[0-9]+$"),      # lag transforms
-  paste0("^(", cm_pat, ")_rmean[0-9]+$"),    # rolling mean
-  paste0("^(", cm_pat, ")_rsd[0-9]+$"),      # rolling SD
-  paste0("^(", cm_pat, ")_chg$"),            # first difference
-  paste0("^(", cm_pat, ")_cyc$"),            # cyclical
-  paste0("^(", cm_pat, ")_accel$"),          # acceleration
+  # Raw level: macro_{base}
+  paste0("^macro_(", base_pat, ")$"),
+  # YoY prefix: macro_yoy_{base}
+  paste0("^macro_yoy_(", base_pat, ")$"),
+  # QoQ prefix: macro_qoq_{base}
+  paste0("^macro_qoq_(", base_pat, ")$"),
+  # Lag suffix: macro_{base}_lag1, _lag2, _lag4
+  paste0("^macro_(", base_pat, ")_lag[0-9]+$"),
+  # Rolling mean: macro_{base}_rmean4, _rmean8
+  paste0("^macro_(", base_pat, ")_rmean[0-9]+$"),
+  # Rolling SD: macro_{base}_rsd4
+  paste0("^macro_(", base_pat, ")_rsd[0-9]+$"),
+  # First difference: macro_{base}_chg
+  paste0("^macro_(", base_pat, ")_chg$"),
+  # Cyclical: macro_{base}_cyc
+  paste0("^macro_(", base_pat, ")_cyc$"),
+  # YoY acceleration: macro_yoy_{base}_accel
+  paste0("^macro_yoy_(", base_pat, ")_accel$"),
   sep="|"
 )
+
 
 # Collect all numeric column names
 all_num_cols <- names(qtrly)[vapply(qtrly, is.numeric, logical(1))]
@@ -345,15 +358,18 @@ found_base  <- character(0)
 missed_base <- character(0)
 for (bv in CURATED_MACRO) {
   # Check all patterns: raw, yoy_, _yoy, qoq_, lags etc.
+  # Build pattern for v5 naming: macro_{base}, macro_yoy_{base}, etc.
+  bv_base <- gsub("^macro_", "", bv)
   pat_bv <- paste(
-    paste0("^", bv, "$"),          # exact match (also catches derived: cpi_yoy, fomc_regime etc.)
-    paste0("^yoy_", bv, "$"),      # yoy_ prefix (FE on base vars)
-    paste0("^", bv, "_yoy$"),      # _yoy suffix
-    paste0("^qoq_", bv, "$"),      # qoq_ prefix
-    paste0("^", bv, "_qoq$"),      # _qoq suffix
-    paste0("^", bv, "_lag"),       # lag variants
-    paste0("^", bv, "_rmean"),     # rolling mean variants
-    paste0("^lag[0-9]+_", bv, "$"),# lag_N_ prefix
+    paste0("^macro_", bv_base, "$"),          # exact: macro_{base}
+    paste0("^macro_yoy_", bv_base, "$"),      # yoy: macro_yoy_{base}
+    paste0("^macro_qoq_", bv_base, "$"),      # qoq: macro_qoq_{base}
+    paste0("^macro_", bv_base, "_lag"),        # lag variants
+    paste0("^macro_", bv_base, "_rmean"),      # rolling mean
+    paste0("^macro_", bv_base, "_rsd"),        # rolling SD
+    paste0("^macro_", bv_base, "_chg$"),       # first difference
+    paste0("^macro_", bv_base, "_cyc$"),       # cyclical
+    paste0("^macro_yoy_", bv_base, "_accel$"), # yoy acceleration
     sep="|")
   hits <- grep(pat_bv, all_num_cols, value=TRUE, perl=TRUE)
   hits_in_feats <- intersect(hits, FEATS_ALL)
@@ -698,6 +714,19 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
   x_train_cols <- colnames(X_train)
 
   # ── Step 1: LASSO pre-screening ──────────────────────────
+
+  # ── PRE-LASSO DIAGNOSTIC: what macro vars are in the feature matrix? ──
+  macro_in_X <- colnames(X_train)[grepl("^macro_", colnames(X_train))]
+  exit_in_X  <- colnames(X_train)[grepl(paste(c(EXIT_VARS, EXIT_VARS_RAW), collapse="|"),
+                                         colnames(X_train), perl=TRUE)]
+  message(sprintf("        [FEATURES] X_train: %d cols total  |  %d macro  |  %d exit",
+                  ncol(X_train), length(macro_in_X), length(exit_in_X)))
+  if (length(macro_in_X) == 0)
+    message("        [WARNING] Zero macro columns in X_train! Check STATIONARY_TRANSFORMS pattern.")
+  else
+    message(sprintf("        [FEATURES] Macro sample: %s",
+                    paste(head(macro_in_X, 8), collapse=", ")))
+
   # Guard: if y has near-zero variance, LASSO cannot run and
   # the category behaves like a sparse/constant series.
   # Treat as sparse → pure ARIMA fallback.
@@ -770,29 +799,49 @@ fit_window_3a <- function(train_dt, test_row, dep_var, feats,
   lasso_all_vars  <- intersect(x_train_cols, rownames(lasso_coef))
   lasso_entered   <- selected
   lasso_dropped   <- setdiff(lasso_all_vars, selected)
+
+  # Classify by type: macro vs exit
   exit_pat_lasso  <- paste(c(EXIT_VARS, EXIT_VARS_RAW), collapse="|")
-  macro_entered   <- lasso_entered[!grepl(exit_pat_lasso, lasso_entered, perl=TRUE)]
+  macro_entered   <- lasso_entered[grepl("^macro_", lasso_entered)]
   exit_entered    <- lasso_entered[grepl(exit_pat_lasso, lasso_entered, perl=TRUE)]
   macro_dropped_l <- lasso_dropped[grepl("^macro_", lasso_dropped)]
+  exit_dropped_l  <- lasso_dropped[grepl(exit_pat_lasso, lasso_dropped, perl=TRUE)]
+
   message(sprintf("        [LASSO] %d/%d vars entered  |  %d dropped (coef=0)",
                   length(lasso_entered), length(lasso_all_vars), length(lasso_dropped)))
-  if (length(macro_entered) > 0)
+
+  # Macro variables: show what entered AND what dropped
+  if (length(macro_entered) > 0) {
     message(sprintf("        [LASSO ENTERED] Macro (%d): %s",
                     length(macro_entered), paste(macro_entered, collapse=", ")))
-  if (length(exit_entered) > 0)
-    message(sprintf("        [LASSO ENTERED] Exit  (%d): %s",
-                    length(exit_entered), paste(exit_entered, collapse=", ")))
+    # Show coefficients for entered macro vars
+    for (mv in macro_entered) {
+      lcoef <- lasso_coef[mv, 1L]
+      message(sprintf("          -> %-35s  coef=%+.5f", mv, lcoef))
+    }
+  } else {
+    message("        [LASSO ENTERED] Macro (0): NONE — all macro vars zeroed out by LASSO")
+  }
   if (length(macro_dropped_l) > 0)
     message(sprintf("        [LASSO DROPPED] Macro (%d): %s",
                     length(macro_dropped_l),
-                    paste(head(macro_dropped_l, 15), collapse=", ")))
+                    paste(head(macro_dropped_l, 20), collapse=", ")))
+
+  # Exit variables: show what entered AND what dropped
+  if (length(exit_entered) > 0)
+    message(sprintf("        [LASSO ENTERED] Exit  (%d): %s",
+                    length(exit_entered), paste(exit_entered, collapse=", ")))
+  if (length(exit_dropped_l) > 0)
+    message(sprintf("        [LASSO DROPPED] Exit  (%d): %s",
+                    length(exit_dropped_l), paste(exit_dropped_l, collapse=", ")))
+
+  # Top 5 by LASSO magnitude
   if (length(lasso_entered) > 0) {
     lasso_mags <- sort(abs(lasso_coef[lasso_entered, 1L]), decreasing=TRUE)
     top5 <- head(lasso_mags, 5)
     message(sprintf("        [LASSO TOP-5] %s",
                     paste(sprintf("%s=%.4f", names(top5), top5), collapse="  ")))
   }
-
 
   # Always protect exit vars (merger/liquidation rates)
   # No quarterly dummies — ARIMA seasonal structure handles seasonality
