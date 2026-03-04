@@ -2461,6 +2461,12 @@ for (sr in names(series_meta_3b)) {
 
     y_ts <- ts(cat_hist[[hcol]], frequency = 4L, start = c(2005L, 1L))
 
+    # ── Compute recent trend direction (last 20 quarters = 5 years) ──
+    n_recent   <- min(20L, length(y_ts))
+    y_recent   <- tail(as.numeric(y_ts), n_recent)
+    recent_slope <- coef(lm(y_recent ~ seq_along(y_recent)))[2L]
+    trend_dir  <- sign(recent_slope)   # +1 = growing, -1 = shrinking
+
     # ── Primary fit: thorough search (no shortcuts) ──────────
     fit_a <- tryCatch(
       forecast::auto.arima(y_ts,
@@ -2481,44 +2487,110 @@ for (sr in names(series_meta_3b)) {
       })
     if (is.null(fit_a)) next
 
-    # ── Guard: reject ARIMA(0,0,0)(0,0,0) for trending series ──
-    # A flat-mean forecast is unrealistic for asset levels.
-    # Force d=1 (or D=1) and refit if auto.arima picked all zeros.
+    # ── Guard 1: reject ARIMA(0,0,0)(0,0,0) outright ────────
     ord_a <- forecast::arimaorder(fit_a)
     is_trivial <- all(ord_a[c("p","d","q","P","D","Q")] == 0L)
     if (is_trivial) {
-      message(sprintf("      [P16 GUARD] %s | %s: auto.arima chose ARIMA(0,0,0) — refitting with d=1",
+      message(sprintf("      [P16 GUARD] %s | %s: ARIMA(0,0,0) — refitting with d=1",
                       sr, cat))
       fit_a2 <- tryCatch(
-        forecast::auto.arima(y_ts,
-                             d = 1L,                  # force first differencing
-                             stepwise     = FALSE,
-                             approximation = FALSE,
+        forecast::auto.arima(y_ts, d = 1L,
+                             stepwise = FALSE, approximation = FALSE,
                              max.p = 3L, max.q = 2L,
-                             max.P = 1L, max.Q = 1L,
-                             max.D = 1L,
+                             max.P = 1L, max.Q = 1L, max.D = 1L,
                              seasonal = TRUE),
         error = function(e) {
-          # Minimal fallback: ARIMA(1,1,0) — random walk with drift
           tryCatch(
             forecast::Arima(y_ts, order = c(1L, 1L, 0L),
-                           seasonal = list(order = c(0L, 0L, 0L), period = 4L)),
+                           include.drift = TRUE),
             error = function(e2) NULL)
         })
       if (!is.null(fit_a2)) {
-        ord_a2 <- forecast::arimaorder(fit_a2)
-        message(sprintf("      [P16 GUARD] Refitted: ARIMA(%d,%d,%d)(%d,%d,%d)[4]  AIC=%.1f (was %.1f)",
-                        ord_a2["p"], ord_a2["d"], ord_a2["q"],
-                        ord_a2["P"], ord_a2["D"], ord_a2["Q"],
-                        AIC(fit_a2), AIC(fit_a)))
+        message(sprintf("      [P16 GUARD] Refitted from (0,0,0)"))
         fit_a <- fit_a2
       }
     }
 
+    # ── Generate forecast and check trend direction ──────────
     fc_a <- tryCatch(
       forecast::forecast(fit_a, h = HORIZON_QTR, level = 95),
       error = function(e) NULL)
     if (is.null(fc_a)) next
+
+    # ── Guard 2: forecast trend contradicts recent history ───
+    # If the series was clearly growing (last 5yr) but forecast
+    # is flat or declining, the ARIMA has likely failed to capture
+    # the trend.  Force d=1 with drift and refit.
+    fc_vals    <- as.numeric(fc_a$mean)
+    fc_slope   <- coef(lm(fc_vals ~ seq_along(fc_vals)))[2L]
+    fc_dir     <- sign(fc_slope)
+    last_val   <- tail(as.numeric(y_ts), 1L)
+
+    # "Flat" means forecast range < 2% of last observed value
+    fc_range   <- max(fc_vals) - min(fc_vals)
+    is_flat    <- (fc_range / max(abs(last_val), 1)) < 0.02
+
+    trend_mismatch <- (trend_dir > 0 && (fc_dir <= 0 || is_flat)) ||
+                      (trend_dir < 0 && (fc_dir >= 0 || is_flat))
+
+    if (trend_mismatch) {
+      message(sprintf(
+        "      [TREND GUARD] %s | %s: recent slope=%+.0f/qtr but forecast slope=%+.0f/qtr — refitting with drift",
+        sr, cat, recent_slope, fc_slope))
+
+      # Strategy: fit ARIMA with d=1 + include.drift to capture the trend
+      fit_drift <- tryCatch(
+        forecast::auto.arima(y_ts, d = 1L,
+                             stepwise = FALSE, approximation = FALSE,
+                             max.p = 3L, max.q = 2L,
+                             max.P = 1L, max.Q = 1L, max.D = 1L,
+                             seasonal = TRUE),
+        error = function(e) NULL)
+
+      # If auto.arima(d=1) still gives flat, try explicit ARIMA(1,1,0) with drift
+      if (!is.null(fit_drift)) {
+        fc_drift <- tryCatch(
+          forecast::forecast(fit_drift, h = HORIZON_QTR, level = 95),
+          error = function(e) NULL)
+        if (!is.null(fc_drift)) {
+          fc_drift_vals <- as.numeric(fc_drift$mean)
+          fc_drift_slope <- coef(lm(fc_drift_vals ~ seq_along(fc_drift_vals)))[2L]
+          drift_dir <- sign(fc_drift_slope)
+          drift_flat <- (max(fc_drift_vals) - min(fc_drift_vals)) /
+                        max(abs(last_val), 1) < 0.02
+
+          if ((trend_dir > 0 && drift_dir > 0 && !drift_flat) ||
+              (trend_dir < 0 && drift_dir < 0 && !drift_flat)) {
+            # d=1 fixed it
+            fit_a <- fit_drift
+            fc_a  <- fc_drift
+            message(sprintf("      [TREND GUARD] d=1 refit OK — forecast now follows trend"))
+          } else {
+            # Last resort: explicit ARIMA(1,1,0) with drift
+            message(sprintf("      [TREND GUARD] d=1 still flat — trying ARIMA(1,1,0)+drift"))
+            fit_rw <- tryCatch(
+              forecast::Arima(y_ts, order = c(1L, 1L, 0L),
+                             include.drift = TRUE),
+              error = function(e) {
+                tryCatch(
+                  forecast::Arima(y_ts, order = c(0L, 1L, 1L),
+                                 include.drift = TRUE),
+                  error = function(e2) NULL)
+              })
+            if (!is.null(fit_rw)) {
+              fc_rw <- tryCatch(
+                forecast::forecast(fit_rw, h = HORIZON_QTR, level = 95),
+                error = function(e) NULL)
+              if (!is.null(fc_rw)) {
+                fit_a <- fit_rw
+                fc_a  <- fc_rw
+                message(sprintf("      [TREND GUARD] ARIMA(1,1,0)+drift applied"))
+              }
+            }
+          }
+        }
+      }
+    }
 
     fc_dates <- LAST_OBS + seq_len(HORIZON_QTR) / 4
 
@@ -2530,9 +2602,10 @@ for (sr in names(series_meta_3b)) {
       arima_point = as.numeric(fc_a$mean),
       arima_lo95  = as.numeric(fc_a$lower[, 1L]),
       arima_hi95  = as.numeric(fc_a$upper[, 1L]),
-      arima_order = sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]",
+      arima_order = sprintf("ARIMA(%d,%d,%d)(%d,%d,%d)[4]%s",
                      ord_final["p"], ord_final["d"], ord_final["q"],
-                     ord_final["P"], ord_final["D"], ord_final["Q"])
+                     ord_final["P"], ord_final["D"], ord_final["Q"],
+                     if ("drift" %in% names(coef(fit_a))) "+drift" else "")
     )
   }
 }
