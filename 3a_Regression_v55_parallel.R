@@ -1536,7 +1536,7 @@ level_fcu  <- make_level_fc("yoy_fcu_pct",  "fcu_count")
 level_fiscu <- make_level_fc("yoy_fiscu_pct", "fiscu_count")
 
 level_fc <- rbindlist(list(level_fcu, level_fiscu), fill=TRUE)
-level_fc[, date := zoo::as.yearqtr(as.numeric(date))]
+if (nrow(level_fc) > 0 && "date" %in% names(level_fc)) level_fc[, date := zoo::as.yearqtr(as.numeric(get("date")))]
 
 # Level-space OOS metrics
 level_metrics <- level_fc[!is.na(actual_level) & !is.na(pred_level),
@@ -1665,7 +1665,7 @@ for (key in names(all_fits)) {
 }
 
 future_fc <- rbindlist(future_rows, fill=TRUE)
-future_fc[, date := zoo::as.yearqtr(as.numeric(date))]
+if (nrow(future_fc) > 0 && "date" %in% names(future_fc)) future_fc[, date := zoo::as.yearqtr(as.numeric(get("date")))]
 fwrite(future_fc, file.path(RESULT_DIR, "future_forecast_3a_v5.csv"))
 message(sprintf("    Future forecast rows: %d", nrow(future_fc)))
 
