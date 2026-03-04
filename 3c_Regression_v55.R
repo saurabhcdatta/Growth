@@ -99,14 +99,54 @@ if (!file.exists(CORP_XLSX))
 
 corp_raw <- as.data.table(read_excel(CORP_XLSX))
 message(sprintf("    Excel: %d rows × %d cols", nrow(corp_raw), ncol(corp_raw)))
-message(sprintf("    Columns: %s", paste(names(corp_raw), collapse=", ")))
 
-# Identify date and asset columns (flexible — first col is date, second is assets)
-date_col  <- names(corp_raw)[1L]
-asset_col <- names(corp_raw)[2L]
+# ── Identify date column ─────────────────────────────────────
+# The date column is "Cycle Date" (or first column if renamed)
+date_col <- if ("Cycle Date" %in% names(corp_raw)) "Cycle Date" else names(corp_raw)[1L]
+
+# ── Identify total assets column ─────────────────────────────
+# Look for a column containing "Total Assets" (case-insensitive)
+# If not found, prompt the user with available columns
+asset_candidates <- grep("total.*asset", names(corp_raw), ignore.case=TRUE, value=TRUE)
+if (length(asset_candidates) == 0L) {
+  # Fallback: look for just "Assets" alone
+  asset_candidates <- grep("^assets$", names(corp_raw), ignore.case=TRUE, value=TRUE)
+}
+if (length(asset_candidates) > 0L) {
+  asset_col <- asset_candidates[1L]
+} else {
+  # Last resort: print all columns and let user know
+  message("    Available columns:")
+  for (cn in names(corp_raw)) message(sprintf("      %s", cn))
+  stop("Could not find a 'Total Assets' column. Please check the Excel file.")
+}
 message(sprintf("    Using: date='%s'  assets='%s'", date_col, asset_col))
 
-corp_raw[, date_raw := as.Date(get(date_col))]
+# ── Parse dates robustly ─────────────────────────────────────
+# read_excel may return dates as POSIXct, numeric (Excel serial), or character
+raw_dates <- corp_raw[[date_col]]
+if (inherits(raw_dates, c("POSIXct","POSIXlt"))) {
+  corp_raw[, date_raw := as.Date(raw_dates)]
+} else if (is.numeric(raw_dates)) {
+  # Excel serial date (origin = 1899-12-30)
+  corp_raw[, date_raw := as.Date(raw_dates, origin = "1899-12-30")]
+} else {
+  # Character — try multiple formats
+  corp_raw[, date_raw := as.Date(as.character(raw_dates), format = "%m/%d/%Y")]
+  if (all(is.na(corp_raw$date_raw))) {
+    corp_raw[, date_raw := as.Date(as.character(raw_dates), format = "%Y-%m-%d")]
+  }
+  if (all(is.na(corp_raw$date_raw))) {
+    corp_raw[, date_raw := as.Date(as.character(raw_dates), format = "%m-%d-%Y")]
+  }
+  if (all(is.na(corp_raw$date_raw))) {
+    # Try lubridate-style parsing as last resort
+    corp_raw[, date_raw := tryCatch(
+      as.Date(lubridate::parse_date_time(as.character(raw_dates),
+              orders = c("mdy","ymd","dmy"))),
+      error = function(e) as.Date(NA))]
+  }
+}
 corp_raw[, corp_cu_assets := as.numeric(get(asset_col))]
 corp_raw <- corp_raw[!is.na(date_raw) & !is.na(corp_cu_assets)]
 setorderv(corp_raw, "date_raw")
