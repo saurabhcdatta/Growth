@@ -1953,7 +1953,10 @@ make_policy_chart_3a <- function(count_col, title_text, stem) {
                       .(date, cat_label, value = pred_level)]
   fc_fut[, cat_label := as.character(cat_label)]
 
-  fc_all <- rbindlist(list(fc_oos, fc_fut), fill = TRUE)
+  # Coerce date to common type before binding
+  if (nrow(fc_oos) > 0) fc_oos[, date := as.numeric(date)]
+  if (nrow(fc_fut) > 0) fc_fut[, date := as.numeric(date)]
+  fc_all <- rbindlist(list(fc_oos, fc_fut), fill = TRUE, use.names = TRUE)
   fc_all <- unique(fc_all, by = c("date", "cat_label"))
 
   if (nrow(fc_all) == 0) {
@@ -1976,7 +1979,7 @@ make_policy_chart_3a <- function(count_col, title_text, stem) {
   all_df      <- all_df[!is.na(all_df$value) & !is.na(all_df$cat_label), ]
   all_df$date <- as.Date(zoo::as.yearqtr(all_df$date_num))
 
-  fc_start_date <- as.Date(min(fc_all$date, na.rm = TRUE))
+  fc_start_date <- as.Date(zoo::as.yearqtr(min(fc_all$date, na.rm = TRUE)))
   fc_end_date   <- as.Date(max(all_df$date, na.rm = TRUE)) + 90
   h1yr          <- fc_start_date + 365
   h3yr          <- fc_start_date + 365 * 3
