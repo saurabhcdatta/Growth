@@ -2588,105 +2588,116 @@ arima_base_all <- if (length(arima_base_list) > 0) {
                   }
 message(sprintf("    Pure ARIMA benchmark: %d models fitted", length(arima_base_list)))
 
+
 # ── Export Pure ARIMA Forecasts to Excel ─────────────────────
 message("\n    Exporting Pure ARIMA forecasts to Excel...")
-if (nrow(arima_base_all) > 0 && requireNamespace("openxlsx", quietly = TRUE)) {
-  library(openxlsx)
+message(sprintf("    arima_base_all: %d rows, %d cols", nrow(arima_base_all), ncol(arima_base_all)))
+if (nrow(arima_base_all) > 0) {
+  # Always save CSV as backup
+  csv_path <- file.path(RESULT_DIR, "pure_arima_forecasts_3a.csv")
+  fwrite(arima_base_all, csv_path)
+  message(sprintf("    CSV backup saved: %s", csv_path))
 
-  wb <- createWorkbook()
+  # Try Excel export
+  has_openxlsx <- requireNamespace("openxlsx", quietly = TRUE)
+  if (!has_openxlsx) {
+    message("    [NOTE] openxlsx not installed. Run: install.packages('openxlsx')")
+    message("    CSV file is available as fallback.")
+  } else {
+    tryCatch({
+      library(openxlsx)
+      wb <- createWorkbook()
 
-  for (sr in names(series_meta_3a)) {
-    sm       <- series_meta_3a[[sr]]
-    sr_label <- sm$label
-    sr_data  <- arima_base_all[series == sr]
-    if (nrow(sr_data) == 0L) next
+      for (sr in names(series_meta_3a)) {
+        sm       <- series_meta_3a[[sr]]
+        sr_label <- sm$label
+        sr_data  <- arima_base_all[series == sr]
+        if (nrow(sr_data) == 0L) next
 
-    # Pivot: one row per quarter, columns = asset-size categories
-    sr_data[, quarter := as.character(zoo::as.yearqtr(date))]
+        # Convert date to readable quarter string
+        sr_data[, quarter := as.character(zoo::as.yearqtr(as.numeric(date)))]
 
-    # Point forecast sheet
-    sheet_pt <- paste0(sr_label, " - Forecast")
-    addWorksheet(wb, sheet_pt)
-    pt_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_point")
-    setorderv(pt_wide, "quarter")
-    setnames(pt_wide, "quarter", "Quarter")
+        # ── Point Forecast sheet ──
+        sheet_pt <- substr(paste0(sr_label, " - Forecast"), 1, 31)
+        addWorksheet(wb, sheet_pt)
+        pt_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_point")
+        setorderv(pt_wide, "quarter")
+        setnames(pt_wide, "quarter", "Quarter")
+        writeData(wb, sheet_pt, x = paste("Pure ARIMA Forecast \u2014", sr_label),
+                  startRow = 1, startCol = 1)
+        writeData(wb, sheet_pt, x = "Point forecast (mean) by asset-size category",
+                  startRow = 2, startCol = 1)
+        writeData(wb, sheet_pt, x = pt_wide, startRow = 4, headerStyle =
+          createStyle(textDecoration = "bold", fgFill = "#D9E2F3",
+                      border = "TopBottomLeftRight", halign = "center"))
+        num_cols <- setdiff(names(pt_wide), "Quarter")
+        for (j in seq_along(num_cols))
+          addStyle(wb, sheet_pt, createStyle(numFmt = "#,##0", halign = "right"),
+                   rows = 5:(4 + nrow(pt_wide)), cols = j + 1, gridExpand = TRUE)
+        setColWidths(wb, sheet_pt, cols = 1:(length(num_cols)+1),
+                     widths = c(14, rep(18, length(num_cols))))
+        addStyle(wb, sheet_pt, createStyle(fontSize = 14, textDecoration = "bold"), rows = 1, cols = 1)
+        addStyle(wb, sheet_pt, createStyle(fontSize = 11, textDecoration = "italic",
+                 fontColour = "#666666"), rows = 2, cols = 1)
 
-    # Write title row
-    writeData(wb, sheet_pt, x = paste("Pure ARIMA Forecast —", sr_label),
-              startRow = 1, startCol = 1)
-    writeData(wb, sheet_pt, x = "Point forecast (mean) by asset-size category",
-              startRow = 2, startCol = 1)
-    writeData(wb, sheet_pt, x = pt_wide, startRow = 4, headerStyle =
-      createStyle(textDecoration = "bold", fgFill = "#D9E2F3",
-                  border = "TopBottomLeftRight", halign = "center"))
+        # ── Lo95 sheet ──
+        sheet_lo <- substr(paste0(sr_label, " - Lo95"), 1, 31)
+        addWorksheet(wb, sheet_lo)
+        lo_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_lo95")
+        setorderv(lo_wide, "quarter"); setnames(lo_wide, "quarter", "Quarter")
+        writeData(wb, sheet_lo, x = paste("95% CI Lower Bound \u2014", sr_label),
+                  startRow = 1, startCol = 1)
+        writeData(wb, sheet_lo, x = lo_wide, startRow = 3, headerStyle =
+          createStyle(textDecoration = "bold", fgFill = "#FCE4EC",
+                      border = "TopBottomLeftRight", halign = "center"))
+        for (j in seq_along(num_cols))
+          addStyle(wb, sheet_lo, createStyle(numFmt = "#,##0", halign = "right"),
+                   rows = 4:(3 + nrow(lo_wide)), cols = j + 1, gridExpand = TRUE)
+        setColWidths(wb, sheet_lo, cols = 1:(length(num_cols)+1),
+                     widths = c(14, rep(18, length(num_cols))))
+        addStyle(wb, sheet_lo, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
 
-    # Format numbers
-    num_cols <- setdiff(names(pt_wide), "Quarter")
-    for (j in seq_along(num_cols)) {
-      addStyle(wb, sheet_pt,
-        style = createStyle(numFmt = "#,##0", halign = "right"),
-        rows = 5:(4 + nrow(pt_wide)), cols = j + 1, gridExpand = TRUE)
-    }
-    setColWidths(wb, sheet_pt, cols = 1:(length(num_cols)+1), widths = c(14, rep(18, length(num_cols))))
+        # ── Hi95 sheet ──
+        sheet_hi <- substr(paste0(sr_label, " - Hi95"), 1, 31)
+        addWorksheet(wb, sheet_hi)
+        hi_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_hi95")
+        setorderv(hi_wide, "quarter"); setnames(hi_wide, "quarter", "Quarter")
+        writeData(wb, sheet_hi, x = paste("95% CI Upper Bound \u2014", sr_label),
+                  startRow = 1, startCol = 1)
+        writeData(wb, sheet_hi, x = hi_wide, startRow = 3, headerStyle =
+          createStyle(textDecoration = "bold", fgFill = "#E8F5E9",
+                      border = "TopBottomLeftRight", halign = "center"))
+        for (j in seq_along(num_cols))
+          addStyle(wb, sheet_hi, createStyle(numFmt = "#,##0", halign = "right"),
+                   rows = 4:(3 + nrow(hi_wide)), cols = j + 1, gridExpand = TRUE)
+        setColWidths(wb, sheet_hi, cols = 1:(length(num_cols)+1),
+                     widths = c(14, rep(18, length(num_cols))))
+        addStyle(wb, sheet_hi, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
 
-    # Title styling
-    addStyle(wb, sheet_pt, createStyle(fontSize = 14, textDecoration = "bold"), rows = 1, cols = 1)
-    addStyle(wb, sheet_pt, createStyle(fontSize = 11, textDecoration = "italic", fontColour = "#666666"), rows = 2, cols = 1)
+        # ── Model Spec sheet ──
+        sheet_sp <- substr(paste0(sr_label, " - Model"), 1, 31)
+        addWorksheet(wb, sheet_sp)
+        spec_dt <- unique(sr_data[, .(cat_label, arima_order)])
+        setnames(spec_dt, c("Asset Category", "ARIMA Specification"))
+        writeData(wb, sheet_sp, x = paste("Model Specifications \u2014", sr_label),
+                  startRow = 1, startCol = 1)
+        writeData(wb, sheet_sp, x = spec_dt, startRow = 3, headerStyle =
+          createStyle(textDecoration = "bold", fgFill = "#FFF3E0",
+                      border = "TopBottomLeftRight"))
+        setColWidths(wb, sheet_sp, cols = 1:2, widths = c(20, 35))
+        addStyle(wb, sheet_sp, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
+      }
 
-    # Lo95 sheet
-    sheet_lo <- paste0(sr_label, " - Lo95")
-    addWorksheet(wb, sheet_lo)
-    lo_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_lo95")
-    setorderv(lo_wide, "quarter")
-    setnames(lo_wide, "quarter", "Quarter")
-    writeData(wb, sheet_lo, x = paste("Pure ARIMA 95% CI Lower Bound —", sr_label),
-              startRow = 1, startCol = 1)
-    writeData(wb, sheet_lo, x = lo_wide, startRow = 3, headerStyle =
-      createStyle(textDecoration = "bold", fgFill = "#FCE4EC", border = "TopBottomLeftRight", halign = "center"))
-    for (j in seq_along(num_cols)) {
-      addStyle(wb, sheet_lo, createStyle(numFmt = "#,##0", halign = "right"),
-        rows = 4:(3 + nrow(lo_wide)), cols = j + 1, gridExpand = TRUE)
-    }
-    setColWidths(wb, sheet_lo, cols = 1:(length(num_cols)+1), widths = c(14, rep(18, length(num_cols))))
-    addStyle(wb, sheet_lo, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
-
-    # Hi95 sheet
-    sheet_hi <- paste0(sr_label, " - Hi95")
-    addWorksheet(wb, sheet_hi)
-    hi_wide <- dcast(sr_data, quarter ~ cat_label, value.var = "arima_hi95")
-    setorderv(hi_wide, "quarter")
-    setnames(hi_wide, "quarter", "Quarter")
-    writeData(wb, sheet_hi, x = paste("Pure ARIMA 95% CI Upper Bound —", sr_label),
-              startRow = 1, startCol = 1)
-    writeData(wb, sheet_hi, x = hi_wide, startRow = 3, headerStyle =
-      createStyle(textDecoration = "bold", fgFill = "#E8F5E9", border = "TopBottomLeftRight", halign = "center"))
-    for (j in seq_along(num_cols)) {
-      addStyle(wb, sheet_hi, createStyle(numFmt = "#,##0", halign = "right"),
-        rows = 4:(3 + nrow(hi_wide)), cols = j + 1, gridExpand = TRUE)
-    }
-    setColWidths(wb, sheet_hi, cols = 1:(length(num_cols)+1), widths = c(14, rep(18, length(num_cols))))
-    addStyle(wb, sheet_hi, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
-
-    # Model spec sheet
-    sheet_spec <- paste0(sr_label, " - Model")
-    addWorksheet(wb, sheet_spec)
-    spec_dt <- unique(sr_data[, .(cat_label, arima_order)])
-    setnames(spec_dt, c("Asset Category", "ARIMA Specification"))
-    writeData(wb, sheet_spec, x = paste("ARIMA Model Specifications —", sr_label),
-              startRow = 1, startCol = 1)
-    writeData(wb, sheet_spec, x = spec_dt, startRow = 3, headerStyle =
-      createStyle(textDecoration = "bold", fgFill = "#FFF3E0", border = "TopBottomLeftRight"))
-    setColWidths(wb, sheet_spec, cols = 1:2, widths = c(20, 35))
-    addStyle(wb, sheet_spec, createStyle(fontSize = 13, textDecoration = "bold"), rows = 1, cols = 1)
+      xlsx_path <- file.path(RESULT_DIR, "pure_arima_forecasts_3a.xlsx")
+      saveWorkbook(wb, xlsx_path, overwrite = TRUE)
+      message(sprintf("    Excel saved: %s", xlsx_path))
+    }, error = function(e) {
+      message(sprintf("    [EXCEL ERROR] %s", conditionMessage(e)))
+      message("    CSV backup is still available.")
+    })
   }
-
-  xlsx_path <- file.path(RESULT_DIR, "pure_arima_forecasts_3a.xlsx")
-  saveWorkbook(wb, xlsx_path, overwrite = TRUE)
-  message(sprintf("    Saved: %s", xlsx_path))
-} else if (nrow(arima_base_all) == 0L) {
-  message("    [SKIP] No ARIMA data to export")
 } else {
-  message("    [SKIP] openxlsx not available — install with: install.packages('openxlsx')")
+  message("    [SKIP] arima_base_all is empty — no data to export")
 }
 
 
