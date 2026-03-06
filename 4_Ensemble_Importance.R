@@ -758,7 +758,9 @@ theme_agg <- theme_imp[, .(
   mean_importance = mean(importance, na.rm = TRUE),
   n_vars = uniqueN(base_var)
 ), by = theme]
-setorderv(theme_agg, "mean_importance", order = -1L)
+# Convert to share of total (percentage)
+theme_agg[, pct_importance := mean_importance / sum(mean_importance) * 100]
+setorderv(theme_agg, "pct_importance", order = -1L)
 theme_agg[, theme := factor(theme, levels = rev(theme))]
 
 theme_colors <- c(
@@ -773,17 +775,18 @@ theme_colors <- c(
   "Other"                            = "#CCCCCC"
 )
 
-p5 <- ggplot(theme_agg, aes(x = mean_importance, y = theme, fill = as.character(theme))) +
+p5 <- ggplot(theme_agg, aes(x = pct_importance, y = theme, fill = as.character(theme))) +
   geom_col(width = 0.7, alpha = 0.9, show.legend = FALSE) +
-  geom_text(aes(label = sprintf("%.0f  (%d vars)", mean_importance, n_vars)),
+  geom_text(aes(label = sprintf("%.1f%%  (%d vars)", pct_importance, n_vars)),
             hjust = -0.05, size = 3.3, color = "#444444") +
   scale_fill_manual(values = theme_colors) +
-  scale_x_continuous(expand = expansion(mult = c(0, 0.2))) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.2)),
+                     labels = function(x) paste0(x, "%")) +
   labs(
     title    = "Which Economic Themes Drive Credit Union Growth?",
-    subtitle = "Macro variables grouped by economic category — average importance across all ensemble models",
-    x = "Average Importance Score", y = NULL,
-    caption  = "Number in parentheses = count of individual variables in each theme"
+    subtitle = "Share of total ensemble importance — macro variables grouped by economic category",
+    x = "Share of Total Importance (%)", y = NULL,
+    caption  = "Percentages sum to 100%  |  Number in parentheses = count of individual variables in each theme"
   ) +
   theme_pub
 save_pub_plot(p5, "E5_importance_by_theme.pdf", w = 12, h = 7)
