@@ -298,7 +298,7 @@ growth_vars <- intersect(growth_vars, names(panel))
 
 # Compute summary stats per category
 cat_profiles <- panel[, {
-  out <- list(cat_label = cat_label[1])
+  out <- list()
   for (gv in growth_vars) {
     vals <- get(gv)
     vals <- vals[!is.na(vals)]
