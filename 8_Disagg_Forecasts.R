@@ -122,34 +122,91 @@ if (!"date" %in% names(cr)) {
 }
 
 # ── Identify key columns ────────────────────────────────
+# Print all column names for diagnostic
+message("  Column names in data:")
+message(paste("   ", paste(names(cr), collapse = ", ")))
+
 # join_number = unique CU identifier
-id_col <- intersect(c("join_number","joinnum","cu_number","charter_number"), names(cr))[1]
-if (is.na(id_col)) stop("Cannot find CU identifier column (join_number)")
+id_candidates <- c("join_number", "joinnum", "cu_number", "charter_number",
+                    "JOIN_NUMBER", "JoinNumber", "CU_NUMBER", "CharterNumber",
+                    "id", "cu_id", "credit_union_id", "ncua_id", "cert",
+                    "acct_id", "cycle_date")
+id_col <- intersect(id_candidates, names(cr))[1]
+
+# If no exact match, try pattern matching
+if (is.na(id_col)) {
+  id_col <- grep("join|charter|cu_num|ncua|cert_?no", names(cr),
+                  ignore.case = TRUE, value = TRUE)[1]
+}
+if (is.na(id_col)) {
+  message("  [ERROR] Could not find CU identifier column.")
+  message("  Candidates tried: ", paste(id_candidates, collapse = ", "))
+  message("  Available columns (first 30): ", paste(head(names(cr), 30), collapse = ", "))
+  stop("Cannot find CU identifier column. Please set id_col manually.")
+}
+message(sprintf("  CU identifier column: '%s'", id_col))
 if (id_col != "join_number") setnames(cr, id_col, "join_number")
 
 # cu_type: 1 = FCU, 2 = FISCU
 if (!"cu_type" %in% names(cr)) {
-  type_col <- intersect(c("type","charter_type"), names(cr))[1]
-  if (!is.na(type_col)) setnames(cr, type_col, "cu_type")
+  type_col <- grep("cu_type|type_?code|charter_type|^type$", names(cr),
+                    ignore.case = TRUE, value = TRUE)[1]
+  if (!is.na(type_col)) {
+    setnames(cr, type_col, "cu_type")
+    message(sprintf("  CU type column: '%s' → cu_type", type_col))
+  } else {
+    message("  [WARN] No cu_type column found — will try to infer from data")
+  }
 }
 
 # assets_tot
 if (!"assets_tot" %in% names(cr)) {
-  asset_col <- intersect(c("total_assets","assets","acct_010"), names(cr))[1]
-  if (!is.na(asset_col)) setnames(cr, asset_col, "assets_tot")
+  asset_col <- grep("assets_tot|total_assets|^assets$|acct_?010|tot_?asset", names(cr),
+                     ignore.case = TRUE, value = TRUE)[1]
+  if (!is.na(asset_col)) {
+    setnames(cr, asset_col, "assets_tot")
+    message(sprintf("  Asset column: '%s' → assets_tot", asset_col))
+  } else {
+    stop("Cannot find total assets column. Available: ",
+         paste(head(grep("asset", names(cr), ignore.case=TRUE, value=TRUE), 10), collapse=", "))
+  }
 }
 
 # cu_name
-name_col <- intersect(c("cu_name","name","institution_name"), names(cr))[1]
-if (!is.na(name_col) && name_col != "cu_name") setnames(cr, name_col, "cu_name")
-if (!"cu_name" %in% names(cr)) cr[, cu_name := paste0("CU_", join_number)]
+if (!"cu_name" %in% names(cr)) {
+  name_col <- grep("cu_name|^name$|institution_name|credit_union_name", names(cr),
+                    ignore.case = TRUE, value = TRUE)[1]
+  if (!is.na(name_col)) {
+    setnames(cr, name_col, "cu_name")
+    message(sprintf("  Name column: '%s' → cu_name", name_col))
+  } else {
+    cr[, cu_name := paste0("CU_", join_number)]
+    message("  No name column — using CU_{join_number}")
+  }
+}
 
-# region, reporting_state
-if (!"region" %in% names(cr)) cr[, region := NA_character_]
+# region
+if (!"region" %in% names(cr)) {
+  reg_col <- grep("^region$|ncua_region|reg_?code", names(cr),
+                   ignore.case = TRUE, value = TRUE)[1]
+  if (!is.na(reg_col)) {
+    setnames(cr, reg_col, "region")
+    message(sprintf("  Region column: '%s' → region", reg_col))
+  } else {
+    cr[, region := NA_character_]
+  }
+}
+
+# reporting_state
 if (!"reporting_state" %in% names(cr)) {
-  state_col <- intersect(c("state","state_code","st"), names(cr))[1]
-  if (!is.na(state_col)) setnames(cr, state_col, "reporting_state")
-  else cr[, reporting_state := NA_character_]
+  state_col <- grep("reporting_state|^state$|state_code|^st$|state_name", names(cr),
+                     ignore.case = TRUE, value = TRUE)[1]
+  if (!is.na(state_col)) {
+    setnames(cr, state_col, "reporting_state")
+    message(sprintf("  State column: '%s' → reporting_state", state_col))
+  } else {
+    cr[, reporting_state := NA_character_]
+  }
 }
 
 # ── Filter to active CUs with assets ────────────────────
