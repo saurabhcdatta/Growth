@@ -80,10 +80,14 @@ message(sprintf("  Horizons: +%dQ (1yr), +%dQ (3yr), +%dQ (5yr)",
 message("\n[1] Loading CU-level data...")
 
 # Try RDS first, then .dta
-if (file.exists("call_report.rds")) {
+if (file.exists("call_report2.rds")) {
+  cr <- readRDS("call_report2.rds")
+  setDT(cr)
+  message("  Loaded call_report2.rds")
+} else if (file.exists("call_report.rds")) {
   cr <- readRDS("call_report.rds")
   setDT(cr)
-  message("  Loaded call_report.rds")
+  message("  Loaded call_report.rds (fallback)")
 } else if (has_haven && file.exists("call_report.dta")) {
   cr <- as.data.table(haven::read_dta("call_report.dta"))
   message("  Loaded call_report.dta")
@@ -217,6 +221,13 @@ setorderv(cr, c("join_number", "date"))
 message(sprintf("  After filtering: %s rows, %s unique CUs",
                 format(nrow(cr), big.mark=","),
                 format(uniqueN(cr$join_number), big.mark=",")))
+
+# ── Only forecast CUs that are active as of 2025 Q3 ─────
+ACTIVE_QTR <- zoo::as.yearqtr("2025 Q3")
+active_jns <- cr[date == ACTIVE_QTR & assets_tot > 0, unique(join_number)]
+cr <- cr[join_number %in% active_jns]
+message(sprintf("  Active CUs as of %s: %s (inactive dropped)",
+                as.character(ACTIVE_QTR), format(length(active_jns), big.mark=",")))
 
 # ── Assign current category (latest observation) ────────
 assign_bucket <- function(assets) {
@@ -399,6 +410,9 @@ message(sprintf("  FISCU forecasts: %s", format(nrow(fc_fiscu), big.mark=",")))
 message("\n[4] Saving Excel outputs...")
 
 format_excel_output <- function(dt) {
+  # Numeric category: extract leading digit from bucket label
+  bucket_to_num <- function(b) as.integer(substr(as.character(b), 1, 1))
+
   out <- dt[, .(
     `Join Number`          = join_number,
     `CU Name`              = cu_name,
@@ -406,12 +420,16 @@ format_excel_output <- function(dt) {
     State                  = reporting_state,
     `Current Assets ($)`   = assets_now,
     `Asset Category (Now)` = bucket_now,
+    `Cat # Now`            = bucket_to_num(bucket_now),
     `Projected Assets 1Yr` = assets_1yr,
     `Category 1Yr`         = bucket_1yr,
+    `Cat # 1Yr`            = bucket_to_num(bucket_1yr),
     `Projected Assets 3Yr` = assets_3yr,
     `Category 3Yr`         = bucket_3yr,
+    `Cat # 3Yr`            = bucket_to_num(bucket_3yr),
     `Projected Assets 5Yr` = assets_5yr,
     `Category 5Yr`         = bucket_5yr,
+    `Cat # 5Yr`            = bucket_to_num(bucket_5yr),
     `ARIMA Model`          = arima_order,
     `Obs (Quarters)`       = n_quarters
   )]
@@ -608,73 +626,138 @@ for (type_label in c("FCU", "FISCU")) {
     theme_pub
   save_pub(p_d1, sprintf("D1_%s_migration_summary.pdf", tolower(type_label)), w = 10, h = 7)
 
-  # ── D2: Category Composition — Now vs Future ─────────
+  # ── D2: Category Composition — Now vs 1yr vs 3yr vs 5yr ─
   message(sprintf("  Chart D2_%s: Composition comparison...", type_label))
-  comp_now <- dt[, .N, by = bucket_now]
-  setnames(comp_now, c("category", "n"))
-  comp_now[, period := "Now"]
-
-  comp_5yr <- dt[!is.na(bucket_5yr), .N, by = bucket_5yr]
-  setnames(comp_5yr, c("category", "n"))
-  comp_5yr[, period := "+5 Years"]
-
-  comp_all <- rbindlist(list(comp_now, comp_5yr))
+  comp_list <- list()
+  for (bkt_col_info in list(
+    list(col = "bucket_now", label = "Now"),
+    list(col = "bucket_1yr", label = "+1 Year"),
+    list(col = "bucket_3yr", label = "+3 Years"),
+    list(col = "bucket_5yr", label = "+5 Years"))) {
+    tmp <- dt[!is.na(get(bkt_col_info$col)), .N, by = c(bkt_col_info$col)]
+    setnames(tmp, c("category", "n"))
+    tmp[, period := bkt_col_info$label]
+    comp_list[[length(comp_list) + 1L]] <- tmp
+  }
+  comp_all <- rbindlist(comp_list)
   comp_all[, total := sum(n), by = period]
   comp_all[, pct := n / total * 100]
-  comp_all[, period := factor(period, levels = c("Now", "+5 Years"))]
+  comp_all[, period := factor(period, levels = c("Now", "+1 Year", "+3 Years", "+5 Years"))]
 
   p_d2 <- ggplot(comp_all, aes(x = period, y = pct, fill = category)) +
-    geom_col(width = 0.5, alpha = 0.9, color = "white", linewidth = 0.3) +
+    geom_col(width = 0.6, alpha = 0.9, color = "white", linewidth = 0.3) +
     scale_fill_manual(values = cat_colors, name = "Asset Category") +
     scale_y_continuous(labels = function(x) paste0(x, "%")) +
     labs(
-      title = sprintf("%s System Composition — Now vs 5 Years Out", type_label),
-      subtitle = "How the distribution of CUs across asset categories is projected to shift",
+      title = sprintf("%s System Composition — Now Through 5 Years", type_label),
+      subtitle = "How the distribution of CUs across asset categories shifts at each forecast horizon",
       x = NULL, y = "Share of CUs (%)",
       caption = "Each bar sums to 100%  |  Colors represent NCUA asset-size categories"
     ) +
     theme_pub +
     theme(legend.position = "right")
-  save_pub(p_d2, sprintf("D2_%s_composition_shift.pdf", tolower(type_label)), w = 10, h = 7)
+  save_pub(p_d2, sprintf("D2_%s_composition_shift.pdf", tolower(type_label)), w = 12, h = 7)
 
-  # ── D3: Net Migration Flows (Sankey-style grouped bar) ──
+  # ── D3: Net Migration Flows — All Horizons ───────────────
   message(sprintf("  Chart D3_%s: Net migration flows...", type_label))
-  flow_5yr <- dt[!is.na(bucket_now) & !is.na(bucket_5yr),
-                  .N, by = .(bucket_now, bucket_5yr)]
-  setnames(flow_5yr, c("from", "to", "n_cus"))
 
-  # Net change per category
-  net_change <- rbind(
-    flow_5yr[, .(net = -sum(n_cus)), by = .(cat = from)],   # outflows
-    flow_5yr[, .(net = sum(n_cus)), by = .(cat = to)]       # inflows
-  )[, .(net = sum(net)), by = cat]
-  # Remove self-flows (they cancel)
-  net_change <- merge(
-    flow_5yr[from != to, .(outflow = sum(n_cus)), by = .(cat = from)],
-    flow_5yr[from != to, .(inflow = sum(n_cus)), by = .(cat = to)],
-    by = "cat", all = TRUE)
-  net_change[is.na(outflow), outflow := 0L]
-  net_change[is.na(inflow), inflow := 0L]
-  net_change[, net := inflow - outflow]
-  net_change[, cat := factor(cat, levels = ASSET_LABELS)]
+  net_list <- list()
+  for (hz_info in list(
+    list(col = "bucket_1yr", label = "+1 Year"),
+    list(col = "bucket_3yr", label = "+3 Years"),
+    list(col = "bucket_5yr", label = "+5 Years"))) {
 
-  p_d3 <- ggplot(net_change, aes(x = cat, y = net, fill = fifelse(net >= 0, "Gaining", "Losing"))) +
-    geom_col(width = 0.6, alpha = 0.9) +
-    geom_text(aes(label = sprintf("%+d", net)),
-              vjust = fifelse(net_change$net >= 0, -0.3, 1.3),
-              size = 3.5, color = "#444444") +
-    geom_hline(yintercept = 0, color = "#999999", linewidth = 0.5) +
-    scale_fill_manual(values = c("Gaining" = pal_green, "Losing" = pal_coral),
-                      name = "Net Flow") +
-    labs(
-      title = sprintf("%s — Net Category Migration in 5 Years", type_label),
-      subtitle = "Positive = category gains CUs from other categories  |  Negative = category loses CUs",
-      x = "Asset Category", y = "Net Change in Number of CUs",
-      caption = "Reflects projected asset growth paths of individual CUs via ARIMA"
-    ) +
-    theme_pub +
-    theme(axis.text.x = element_text(angle = 30, hjust = 1))
-  save_pub(p_d3, sprintf("D3_%s_net_migration.pdf", tolower(type_label)), w = 12, h = 7)
+    flow <- dt[!is.na(bucket_now) & !is.na(get(hz_info$col)),
+               .N, by = .(from = bucket_now, to = get(hz_info$col))]
+    setnames(flow, "to", "to_cat")
+    flow_moved <- flow[from != to_cat]
+    if (nrow(flow_moved) == 0) next
+
+    nc <- merge(
+      flow_moved[, .(outflow = sum(N)), by = .(cat = from)],
+      flow_moved[, .(inflow = sum(N)), by = .(cat = to_cat)],
+      by = "cat", all = TRUE)
+    nc[is.na(outflow), outflow := 0L]
+    nc[is.na(inflow), inflow := 0L]
+    nc[, net := inflow - outflow]
+    nc[, horizon := hz_info$label]
+    net_list[[length(net_list) + 1L]] <- nc
+  }
+
+  if (length(net_list) > 0) {
+    net_all <- rbindlist(net_list, fill = TRUE)
+    net_all[, cat := factor(cat, levels = ASSET_LABELS)]
+    net_all[, horizon := factor(horizon, levels = c("+1 Year", "+3 Years", "+5 Years"))]
+
+    p_d3 <- ggplot(net_all, aes(x = cat, y = net, fill = fifelse(net >= 0, "Gaining", "Losing"))) +
+      geom_col(width = 0.6, alpha = 0.9) +
+      geom_text(aes(label = sprintf("%+d", net)),
+                vjust = fifelse(net_all$net >= 0, -0.3, 1.3),
+                size = 2.8, color = "#444444") +
+      geom_hline(yintercept = 0, color = "#999999", linewidth = 0.4) +
+      facet_wrap(~horizon, ncol = 1) +
+      scale_fill_manual(values = c("Gaining" = pal_green, "Losing" = pal_coral),
+                        name = "Net Flow") +
+      labs(
+        title = sprintf("%s — Net Category Migration at Each Horizon", type_label),
+        subtitle = "Positive = category gains CUs  |  Negative = loses CUs  |  Faceted by forecast horizon",
+        x = "Asset Category", y = "Net Change in Number of CUs",
+        caption = "Based on individual ARIMA forecasts of each CU's asset trajectory"
+      ) +
+      theme_pub +
+      theme(axis.text.x = element_text(angle = 30, hjust = 1, size = 8),
+            strip.text = element_text(face = "bold", size = 11))
+    save_pub(p_d3, sprintf("D3_%s_net_migration_all.pdf", tolower(type_label)), w = 12, h = 12)
+  }
+
+  # ── D4: Transition Matrix Heatmaps ─────────────────────
+  # Shows FROM (row) → TO (column) counts for each horizon
+  message(sprintf("  Chart D4_%s: Transition matrices...", type_label))
+
+  for (hz_info in list(
+    list(col = "bucket_1yr", label = "1 Year", short = "1yr"),
+    list(col = "bucket_3yr", label = "3 Years", short = "3yr"),
+    list(col = "bucket_5yr", label = "5 Years", short = "5yr"))) {
+
+    flow_dt <- dt[!is.na(bucket_now) & !is.na(get(hz_info$col)),
+                  .N, by = .(from = bucket_now, to = get(hz_info$col))]
+    setnames(flow_dt, "to", "to_cat")
+
+    # Compute percentages (% of each FROM category)
+    flow_dt[, from_total := sum(N), by = from]
+    flow_dt[, pct := N / from_total * 100]
+    flow_dt[, from := factor(from, levels = rev(ASSET_LABELS))]
+    flow_dt[, to_cat := factor(to_cat, levels = ASSET_LABELS)]
+
+    # Color: diagonal = blue (stay), off-diagonal = intensity by count
+    flow_dt[, is_same := as.character(from) == as.character(to_cat)]
+
+    p_d4 <- ggplot(flow_dt, aes(x = to_cat, y = from, fill = pct)) +
+      geom_tile(color = "white", linewidth = 1) +
+      geom_text(aes(label = sprintf("%d\n(%.0f%%)", N, pct),
+                    color = ifelse(pct > 50, "high", "low")),
+                size = 3, fontface = "bold", lineheight = 0.85, show.legend = FALSE) +
+      scale_color_manual(values = c("high" = "white", "low" = "#333333")) +
+      scale_fill_gradient2(low = "#FAFAFA", mid = pal_sky, high = pal_navy,
+                           midpoint = 30, name = "% of\nSource",
+                           guide = guide_colorbar(barwidth = 1.2, barheight = 8)) +
+      labs(
+        title = sprintf("%s Transition Matrix — Where Do CUs Move in %s?",
+                        type_label, hz_info$label),
+        subtitle = "Rows = current category  |  Columns = projected category\nDiagonal = CUs that stay in same category  |  Off-diagonal = movers",
+        x = sprintf("Projected Category (%s Out)", hz_info$label),
+        y = "Current Category (2025 Q3)",
+        caption = sprintf("Each cell: count of CUs (and %% of source category)  |  %s %ss  |  Darker = more CUs",
+                          format(nrow(dt), big.mark=","), type_label)
+      ) +
+      theme_pub +
+      theme(panel.grid = element_blank(),
+            axis.text.x = element_text(angle = 45, hjust = 1, size = 9, face = "bold"),
+            axis.text.y = element_text(size = 9, face = "bold"),
+            legend.position = "right")
+    save_pub(p_d4, sprintf("D4_%s_transition_%s.pdf", tolower(type_label), hz_info$short),
+             w = 11, h = 9)
+  }
 }
 
 # ════════════════════════════════════════════════════════════
@@ -708,6 +791,7 @@ message("    fcu_individual_forecasts.xlsx")
 message("    fiscu_individual_forecasts.xlsx")
 message(sprintf("  Charts: %s/", PLOT_DIR))
 message("    D1 — Migration summary (% up/same/down)")
-message("    D2 — System composition now vs 5 years")
-message("    D3 — Net migration flows by category")
+message("    D2 — System composition: Now, +1yr, +3yr, +5yr")
+message("    D3 — Net migration flows at each horizon")
+message("    D4 — Transition matrices: 1yr, 3yr, 5yr (FROM→TO heatmaps)")
 message("============================================================")
