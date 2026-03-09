@@ -560,50 +560,86 @@ toc()
 message("\n[6] Analysis 7E: Consolidation Tipping Point...")
 tic("7E Tipping")
 
-# Exit rates by category
-exit_vars_avail <- intersect(c("merger_rate", "liquid_rate", "exit_rate",
-                                "acquisition_rate"), names(panel))
+# ── Recompute exit rates correctly ───────────────────────
+# Part 1's merger_rate uses fcu_count (FCU only) as denominator
+# but n_mergers counts ALL mergers (FCU + FISCU).
+# Fix: use total CU count (fcu_count + fiscu_count) as denominator,
+# OR use n_active if available.
+has_mergers  <- "n_mergers" %in% names(panel)
+has_liquid   <- "n_liquid"  %in% names(panel)
+has_fcu      <- "fcu_count" %in% names(panel)
+has_fiscu    <- "fiscu_count" %in% names(panel)
 
-if (length(exit_vars_avail) > 0) {
+if (has_mergers && (has_fcu || "n_active" %in% names(panel))) {
+
+  # Total CU count per category-quarter as denominator
+  if ("n_active" %in% names(panel)) {
+    panel[, total_cus := n_active]
+  } else if (has_fcu && has_fiscu) {
+    panel[, total_cus := fcu_count + fiscu_count]
+  } else {
+    panel[, total_cus := fcu_count]
+  }
+
+  # Corrected rates: mergers / total CUs in category
+  panel[total_cus > 0, `:=`(
+    merger_rate_corrected = n_mergers / total_cus * 100
+  )]
+  if (has_liquid) {
+    panel[total_cus > 0, liquid_rate_corrected := n_liquid / total_cus * 100]
+    panel[total_cus > 0, exit_rate_corrected := (n_mergers + n_liquid) / total_cus * 100]
+  }
+
+  # Aggregate by category
+  exit_cols <- intersect(c("merger_rate_corrected", "liquid_rate_corrected",
+                           "exit_rate_corrected"), names(panel))
   exit_by_cat <- panel[, lapply(.SD, mean, na.rm = TRUE),
-                       .SDcols = exit_vars_avail, by = cat_label]
+                       .SDcols = exit_cols, by = cat_label]
   setorderv(exit_by_cat, "cat_label")
 
-  # Asset growth by category
+  # Add asset growth
   asset_gr <- panel[, .(
     avg_asset_growth = mean(yoy_fcu_assets_pct, na.rm = TRUE),
     avg_count_growth = mean(yoy_fcu_pct, na.rm = TRUE)
   ), by = cat_label]
-  setorderv(asset_gr, "cat_label")
 
   exit_profile <- merge(exit_by_cat, asset_gr, by = "cat_label")
+
+  message(sprintf("  Exit rates (corrected) — range: %.2f%% to %.2f%%",
+                  min(exit_profile$merger_rate_corrected, na.rm=TRUE),
+                  max(exit_profile$merger_rate_corrected, na.rm=TRUE)))
 
   fwrite(exit_profile, file.path(RESULT_DIR, "consolidation_profile.csv"))
 
   # ── Chart P9: Consolidation Profile ──────────────────────
   message("  Chart P9: Consolidation profile...")
 
-  # Melt exit rates for grouped bar
-  exit_long <- melt(exit_profile, id.vars = "cat_label",
-                    measure.vars = intersect(c("merger_rate","liquid_rate"), names(exit_profile)),
-                    variable.name = "exit_type", value.name = "rate")
-  exit_long[, exit_type := gsub("_rate", "", exit_type)]
-  exit_long[, exit_type := paste0(toupper(substr(exit_type,1,1)), substr(exit_type,2,nchar(exit_type)))]
+  if ("liquid_rate_corrected" %in% names(exit_profile)) {
+    exit_long <- melt(exit_profile, id.vars = "cat_label",
+                      measure.vars = c("merger_rate_corrected", "liquid_rate_corrected"),
+                      variable.name = "exit_type", value.name = "rate")
+    exit_long[, exit_type := fifelse(exit_type == "merger_rate_corrected",
+                                     "Merger", "Liquidation")]
+  } else {
+    exit_long <- data.table(cat_label = exit_profile$cat_label,
+                            exit_type = "Merger",
+                            rate = exit_profile$merger_rate_corrected)
+  }
 
   p_t1 <- ggplot(exit_long, aes(x = cat_label, y = rate, fill = exit_type)) +
     geom_col(position = position_dodge(width = 0.7), width = 0.6, alpha = 0.9) +
     geom_text(aes(label = sprintf("%.2f%%", rate)),
               position = position_dodge(width = 0.7), vjust = -0.3,
               size = 2.8, color = "#555555") +
-    scale_fill_manual(values = c("Merger" = pal_coral, "Liquid" = pal_amber),
+    scale_fill_manual(values = c("Merger" = pal_coral, "Liquidation" = pal_amber),
                       name = "Exit Type") +
     scale_y_continuous(expand = expansion(mult = c(0, 0.15)),
                        labels = function(x) paste0(x, "%")) +
     labs(
       title = "Consolidation Tipping Point — Exit Rates by Size Category",
-      subtitle = "Average quarterly merger and liquidation rates\nSmaller CUs face higher exit pressure → the tipping point is visible",
+      subtitle = "Average quarterly merger and liquidation rates (% of total CUs in category)\nSmaller CUs face higher exit pressure — rate drops sharply at the tipping point",
       x = "Asset-Size Category", y = "Average Quarterly Exit Rate (%)",
-      caption = "Higher bars = more CUs in this category exit per quarter\nTipping point: where exit rate drops sharply = size threshold for stability"
+      caption = "Exit rate = mergers (or liquidations) per quarter / total CUs in category × 100"
     ) +
     theme_pub +
     theme(axis.text.x = element_text(angle = 30, hjust = 1, size = 9))
@@ -612,22 +648,31 @@ if (length(exit_vars_avail) > 0) {
   # ── Chart P10: Exit Rate vs Asset Growth Scatter ───────
   message("  Chart P10: Exit vs growth scatter...")
 
-  p_t2 <- ggplot(exit_profile, aes(x = merger_rate, y = avg_asset_growth)) +
+  p_t2 <- ggplot(exit_profile, aes(x = merger_rate_corrected, y = avg_asset_growth)) +
     geom_smooth(method = "lm", se = TRUE, color = pal_sky, fill = pal_sky,
                 alpha = 0.15, linewidth = 0.8) +
     geom_point(size = 5, color = pal_navy, alpha = 0.9) +
     geom_text(aes(label = cat_label), vjust = -1.2, size = 3.2, color = "#555555") +
+    scale_x_continuous(labels = function(x) paste0(x, "%")) +
+    scale_y_continuous(labels = function(x) paste0(x, "%")) +
     labs(
       title = "Merger Pressure vs Asset Growth — The Consolidation Trade-off",
-      subtitle = "Each dot = one asset-size category\nCategories with high merger rates tend to have different asset growth profiles",
-      x = "Average Merger Rate (%)", y = "Average FCU Asset Growth (YoY %)",
-      caption = "Relationship shows whether consolidation pressure correlates with faster or slower asset growth"
+      subtitle = "Each dot = one asset-size category\nSmaller CUs: higher merger rates, lower growth  |  Larger CUs: low mergers, strong growth",
+      x = "Average Quarterly Merger Rate (%)", y = "Average FCU Asset Growth (YoY %)",
+      caption = "Merger rate = mergers per quarter / total CUs in category × 100\nDownward slope = consolidation pressure associated with weaker asset growth"
     ) +
     theme_pub
   save_pub(p_t2, "P10_merger_vs_growth.pdf", w = 11, h = 8)
 
+  # Clean up temporary columns
+  panel[, c("total_cus", "merger_rate_corrected") := NULL]
+  if ("liquid_rate_corrected" %in% names(panel))
+    panel[, liquid_rate_corrected := NULL]
+  if ("exit_rate_corrected" %in% names(panel))
+    panel[, exit_rate_corrected := NULL]
+
 } else {
-  message("  [SKIP] No exit rate variables found in panel")
+  message("  [SKIP] n_mergers or count columns not found in panel")
 }
 
 toc()
@@ -702,10 +747,10 @@ message("")
 message("  7D — MIGRATION: Category composition trends")
 message("    Small CUs declining → large CUs gaining share")
 message("")
-if (length(exit_vars_avail) > 0) {
+if (has_mergers) {
   message("  7E — TIPPING POINT: Exit rate by size")
   message(sprintf("    Highest merger pressure: %s",
-                  exit_profile$cat_label[which.max(exit_profile$merger_rate)]))
+                  exit_profile$cat_label[which.max(exit_profile$merger_rate_corrected)]))
 }
 message("")
 message(sprintf("  Charts: %s/ (P1-P10)", PLOT_DIR))
