@@ -228,30 +228,46 @@ message("  Chart G2: Migration direction by state...")
 top20_states <- head(state_score[order(-n_cus)], 20)$state
 
 mig_by_state <- fc_all[state %in% top20_states, .(
-  `Moved Up`     = sum(bnum_5yr > bnum_now, na.rm=TRUE) / .N * 100,
-  `Same Category` = sum(bnum_5yr == bnum_now, na.rm=TRUE) / .N * 100,
-  `Moved Down`   = sum(bnum_5yr < bnum_now, na.rm=TRUE) / .N * 100,
-  n_cus = .N
+  up_n    = sum(bnum_5yr > bnum_now, na.rm=TRUE),
+  same_n  = sum(bnum_5yr == bnum_now, na.rm=TRUE),
+  down_n  = sum(bnum_5yr < bnum_now, na.rm=TRUE),
+  n_cus   = .N
 ), by = state]
+mig_by_state[, up_pct   := up_n / n_cus * 100]
+mig_by_state[, same_pct := same_n / n_cus * 100]
+mig_by_state[, down_pct := down_n / n_cus * 100]
 
-mig_long <- melt(mig_by_state, id.vars = c("state", "n_cus"),
-                 variable.name = "direction", value.name = "pct")
+mig_long <- rbindlist(list(
+  mig_by_state[, .(state, n_cus, direction = "Moved Up",      pct = up_pct,   count = up_n)],
+  mig_by_state[, .(state, n_cus, direction = "Same Category", pct = same_pct, count = same_n)],
+  mig_by_state[, .(state, n_cus, direction = "Moved Down",    pct = down_pct, count = down_n)]
+))
 mig_long[, state := factor(state, levels = rev(mig_by_state[order(-n_cus), state]))]
+mig_long[, direction := factor(direction, levels = c("Moved Down", "Same Category", "Moved Up"))]
+# Label: show count and % inside bar (only if segment is wide enough)
+mig_long[, label := fifelse(pct >= 5, sprintf("%d (%.0f%%)", count, pct), "")]
 
 dir_colors <- c("Moved Up" = pal_green, "Same Category" = pal_sky, "Moved Down" = pal_coral)
 
 p_g2 <- ggplot(mig_long, aes(x = pct, y = state, fill = direction)) +
   geom_col(width = 0.65, alpha = 0.9) +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5),
+            size = 2.6, color = "white", fontface = "bold") +
+  # Add total CU count at end of bar
+  geom_text(data = mig_by_state,
+            aes(x = 102, y = state, label = sprintf("n=%d", n_cus)),
+            inherit.aes = FALSE, size = 2.5, color = "#888888", hjust = 0) +
   scale_fill_manual(values = dir_colors, name = "5-Year Projection") +
-  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_x_continuous(labels = function(x) paste0(x, "%"),
+                     expand = expansion(mult = c(0, 0.08))) +
   labs(
     title = "CU Category Migration by State — Top 20 States by CU Count",
-    subtitle = "What percentage of each state's CUs are projected to move up, stay, or move down\nin asset category over the next 5 years",
+    subtitle = "What percentage of each state's CUs are projected to move up, stay, or move down\nin asset category over the next 5 years  |  Labels show count (% of state total)",
     x = "Share of CUs (%)", y = NULL,
-    caption = "States sorted by total CU count (largest at top)"
+    caption = "States sorted by total CU count (largest at top)  |  Labels hidden if segment < 5%"
   ) +
   theme_pub
-save_pub(p_g2, "G2_state_migration_direction.pdf", w = 13, h = 10)
+save_pub(p_g2, "G2_state_migration_direction.pdf", w = 14, h = 10)
 
 # ── Chart G3: Average Category Shift (dot plot) ──────────
 message("  Chart G3: Average category shift...")
