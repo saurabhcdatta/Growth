@@ -154,6 +154,7 @@ save_pub <- function(p, filename, w = 12, h = 8) {
 message("\n[2] Analysis 9A: State Mobility Scorecard...")
 tic("9A")
 
+# Compute scorecard by state AND cu_type
 state_score <- fc_all[, .(
   n_cus           = .N,
   pct_up_1yr      = sum(bnum_1yr > bnum_now, na.rm=TRUE) / .N * 100,
@@ -168,52 +169,65 @@ state_score <- fc_all[, .(
   avg_cat_now     = mean(bnum_now, na.rm=TRUE),
   avg_cat_5yr     = mean(bnum_5yr, na.rm=TRUE),
   avg_asset_now   = mean(assets_now, na.rm=TRUE)
-), by = state]
+), by = .(state, cu_type_label)]
 
-# Net mobility score: pct_up minus pct_down (5yr horizon)
 state_score[, net_mobility_5yr := pct_up_5yr - pct_down_5yr]
 state_score[, avg_cat_shift := avg_cat_5yr - avg_cat_now]
-setorderv(state_score, "net_mobility_5yr", order = -1L)
-
-# Filter to states with at least 10 CUs for reliability
-state_score_filt <- state_score[n_cus >= 10]
 
 fwrite(state_score, file.path(RESULT_DIR, "state_mobility_scorecard.csv"))
 
-# ── Chart G1: Top 15 & Bottom 15 States by Net Mobility ──
-message("  Chart G1: State mobility ranking...")
+# ── Chart G1: Top 15 & Bottom 15 — separately for FCU and FISCU ──
+message("  Chart G1: State mobility ranking (FCU & FISCU)...")
 
-top15 <- head(state_score_filt, 15)
-bot15 <- tail(state_score_filt, 15)
-rank_dt <- rbindlist(list(
-  top15[, .(state, net_mobility_5yr, n_cus, group = "Top 15 — Highest Upward Mobility")],
-  bot15[, .(state, net_mobility_5yr, n_cus, group = "Bottom 15 — Most Consolidation")]
-))
-rank_dt[, state := factor(state, levels = rev(unique(state)))]
-rank_dt[, group := factor(group, levels = c("Top 15 — Highest Upward Mobility",
-                                              "Bottom 15 — Most Consolidation"))]
+for (type_lbl in c("FCU", "FISCU")) {
+  ss <- state_score[cu_type_label == type_lbl & n_cus >= 10]
+  if (nrow(ss) < 5) next
+  setorderv(ss, "net_mobility_5yr", order = -1L)
 
-p_g1 <- ggplot(rank_dt, aes(x = net_mobility_5yr, y = state,
-                              fill = fifelse(net_mobility_5yr >= 0, "Positive", "Negative"))) +
-  geom_col(width = 0.65, alpha = 0.9, show.legend = FALSE) +
-  geom_text(aes(label = sprintf("%+.1f%% (%d CUs)", net_mobility_5yr, n_cus)),
-            hjust = fifelse(rank_dt$net_mobility_5yr >= 0, -0.05, 1.05),
-            size = 2.8, color = "#444444") +
-  geom_vline(xintercept = 0, color = "#999999", linewidth = 0.4) +
-  facet_wrap(~group, scales = "free_y", ncol = 1) +
-  scale_fill_manual(values = c("Positive" = pal_green, "Negative" = pal_coral)) +
-  scale_x_continuous(labels = function(x) paste0(x, "%")) +
-  labs(
-    title = "State CU Mobility — Which States Are Growing vs Consolidating?",
-    subtitle = "Net mobility = % of CUs moving up a category minus % moving down (5-year horizon)\nPositive = more CUs growing into larger categories  |  Negative = more shrinking/consolidating",
-    x = "Net Mobility (% up − % down)", y = NULL,
-    caption = sprintf("States with ≥ 10 CUs shown  |  Based on %s individual ARIMA forecasts",
-                      format(nrow(fc_all), big.mark=","))
-  ) +
-  theme_pub +
-  theme(strip.text = element_text(face = "bold", size = 11),
-        axis.text.y = element_text(size = 9))
-save_pub(p_g1, "G1_state_mobility_ranking.pdf", w = 13, h = 12)
+  top15 <- head(ss, 15)
+  bot15 <- tail(ss, 15)
+  rank_dt <- rbindlist(list(
+    top15[, .(state, net_mobility_5yr, n_cus, group = "Top 15 — Highest Upward Mobility")],
+    bot15[, .(state, net_mobility_5yr, n_cus, group = "Bottom 15 — Most Consolidation")]
+  ))
+  rank_dt[, state := factor(state, levels = rev(unique(state)))]
+  rank_dt[, group := factor(group, levels = c("Top 15 — Highest Upward Mobility",
+                                                "Bottom 15 — Most Consolidation"))]
+
+  p_g1 <- ggplot(rank_dt, aes(x = net_mobility_5yr, y = state,
+                                fill = fifelse(net_mobility_5yr >= 0, "Positive", "Negative"))) +
+    geom_col(width = 0.65, alpha = 0.9, show.legend = FALSE) +
+    geom_text(aes(label = sprintf("%+.1f%% (%d CUs)", net_mobility_5yr, n_cus)),
+              hjust = fifelse(rank_dt$net_mobility_5yr >= 0, -0.05, 1.05),
+              size = 2.8, color = "#444444") +
+    geom_vline(xintercept = 0, color = "#999999", linewidth = 0.4) +
+    facet_wrap(~group, scales = "free_y", ncol = 1) +
+    scale_fill_manual(values = c("Positive" = pal_green, "Negative" = pal_coral)) +
+    scale_x_continuous(labels = function(x) paste0(x, "%")) +
+    labs(
+      title = sprintf("%s State Mobility — Which States Are Growing vs Consolidating?", type_lbl),
+      subtitle = sprintf("Net mobility = %% of %ss moving up minus %% moving down (5-year horizon)", type_lbl),
+      x = "Net Mobility (% up − % down)", y = NULL,
+      caption = sprintf("States with ≥ 10 %ss shown  |  Based on individual ARIMA forecasts", type_lbl)
+    ) +
+    theme_pub +
+    theme(strip.text = element_text(face = "bold", size = 11),
+          axis.text.y = element_text(size = 9))
+  save_pub(p_g1, sprintf("G1_%s_state_mobility.pdf", tolower(type_lbl)), w = 13, h = 12)
+}
+
+# Also keep overall scorecard for other analyses
+state_score_overall <- fc_all[, .(
+  n_cus = .N,
+  pct_up_5yr   = sum(bnum_5yr > bnum_now, na.rm=TRUE) / .N * 100,
+  pct_down_5yr = sum(bnum_5yr < bnum_now, na.rm=TRUE) / .N * 100,
+  avg_cat_now  = mean(bnum_now, na.rm=TRUE),
+  avg_cat_5yr  = mean(bnum_5yr, na.rm=TRUE)
+), by = state]
+state_score_overall[, net_mobility_5yr := pct_up_5yr - pct_down_5yr]
+state_score_overall[, avg_cat_shift := avg_cat_5yr - avg_cat_now]
+state_score_filt <- state_score_overall[n_cus >= 10]
+setorderv(state_score_filt, "net_mobility_5yr", order = -1L)
 
 toc()
 
@@ -223,51 +237,54 @@ toc()
 message("\n[3] Analysis 9B: State Comparison Charts...")
 tic("9B")
 
-# ── Chart G2: Migration Direction by State (top 20 by CU count) ──
-message("  Chart G2: Migration direction by state...")
-top20_states <- head(state_score[order(-n_cus)], 20)$state
+# ── Chart G2: Migration Direction by State — FCU and FISCU separately ──
+message("  Chart G2: Migration direction by state (FCU & FISCU)...")
+top20_states <- head(state_score_overall[order(-n_cus)], 20)$state
 
-mig_by_state <- fc_all[state %in% top20_states, .(
-  up_n    = sum(bnum_5yr > bnum_now, na.rm=TRUE),
-  same_n  = sum(bnum_5yr == bnum_now, na.rm=TRUE),
-  down_n  = sum(bnum_5yr < bnum_now, na.rm=TRUE),
-  n_cus   = .N
-), by = state]
-mig_by_state[, up_pct   := up_n / n_cus * 100]
-mig_by_state[, same_pct := same_n / n_cus * 100]
-mig_by_state[, down_pct := down_n / n_cus * 100]
+for (type_lbl in c("FCU", "FISCU")) {
+  type_dt <- fc_all[state %in% top20_states & cu_type_label == type_lbl]
+  if (nrow(type_dt) < 20) next
 
-mig_long <- rbindlist(list(
-  mig_by_state[, .(state, n_cus, direction = "Moved Up",      pct = up_pct,   count = up_n)],
-  mig_by_state[, .(state, n_cus, direction = "Same Category", pct = same_pct, count = same_n)],
-  mig_by_state[, .(state, n_cus, direction = "Moved Down",    pct = down_pct, count = down_n)]
-))
-mig_long[, state := factor(state, levels = rev(mig_by_state[order(-n_cus), state]))]
-mig_long[, direction := factor(direction, levels = c("Moved Down", "Same Category", "Moved Up"))]
-# Label: show count and % inside bar (only if segment is wide enough)
-mig_long[, label := fifelse(pct >= 5, sprintf("%d (%.0f%%)", count, pct), "")]
+  mig_by_state <- type_dt[, .(
+    up_n    = sum(bnum_5yr > bnum_now, na.rm=TRUE),
+    same_n  = sum(bnum_5yr == bnum_now, na.rm=TRUE),
+    down_n  = sum(bnum_5yr < bnum_now, na.rm=TRUE),
+    n_cus   = .N
+  ), by = state]
+  mig_by_state[, up_pct   := up_n / n_cus * 100]
+  mig_by_state[, same_pct := same_n / n_cus * 100]
+  mig_by_state[, down_pct := down_n / n_cus * 100]
 
-dir_colors <- c("Moved Up" = pal_green, "Same Category" = pal_sky, "Moved Down" = pal_coral)
+  mig_long <- rbindlist(list(
+    mig_by_state[, .(state, n_cus, direction = "Moved Up",      pct = up_pct,   count = up_n)],
+    mig_by_state[, .(state, n_cus, direction = "Same Category", pct = same_pct, count = same_n)],
+    mig_by_state[, .(state, n_cus, direction = "Moved Down",    pct = down_pct, count = down_n)]
+  ))
+  mig_long[, state := factor(state, levels = rev(mig_by_state[order(-up_pct), state]))]
+  mig_long[, direction := factor(direction, levels = c("Moved Down", "Same Category", "Moved Up"))]
+  mig_long[, label := fifelse(pct >= 5, sprintf("%d (%.0f%%)", count, pct), "")]
 
-p_g2 <- ggplot(mig_long, aes(x = pct, y = state, fill = direction)) +
-  geom_col(width = 0.65, alpha = 0.9) +
-  geom_text(aes(label = label), position = position_stack(vjust = 0.5),
-            size = 2.6, color = "white", fontface = "bold") +
-  # Add total CU count at end of bar
-  geom_text(data = mig_by_state,
-            aes(x = 102, y = state, label = sprintf("n=%d", n_cus)),
-            inherit.aes = FALSE, size = 2.5, color = "#888888", hjust = 0) +
-  scale_fill_manual(values = dir_colors, name = "5-Year Projection") +
-  scale_x_continuous(labels = function(x) paste0(x, "%"),
-                     expand = expansion(mult = c(0, 0.08))) +
-  labs(
-    title = "CU Category Migration by State — Top 20 States by CU Count",
-    subtitle = "What percentage of each state's CUs are projected to move up, stay, or move down\nin asset category over the next 5 years  |  Labels show count (% of state total)",
-    x = "Share of CUs (%)", y = NULL,
-    caption = "States sorted by total CU count (largest at top)  |  Labels hidden if segment < 5%"
-  ) +
-  theme_pub
-save_pub(p_g2, "G2_state_migration_direction.pdf", w = 14, h = 10)
+  dir_colors <- c("Moved Up" = pal_green, "Same Category" = pal_sky, "Moved Down" = pal_coral)
+
+  p_g2 <- ggplot(mig_long, aes(x = pct, y = state, fill = direction)) +
+    geom_col(width = 0.65, alpha = 0.9) +
+    geom_text(aes(label = label), position = position_stack(vjust = 0.5),
+              size = 2.6, color = "white", fontface = "bold") +
+    geom_text(data = mig_by_state,
+              aes(x = 102, y = state, label = sprintf("n=%d", n_cus)),
+              inherit.aes = FALSE, size = 2.5, color = "#888888", hjust = 0) +
+    scale_fill_manual(values = dir_colors, name = "5-Year Projection") +
+    scale_x_continuous(labels = function(x) paste0(x, "%"),
+                       expand = expansion(mult = c(0, 0.08))) +
+    labs(
+      title = sprintf("%s Category Migration by State — Top 20 States", type_lbl),
+      subtitle = sprintf("What percentage of each state's %ss move up, stay, or move down over 5 years\nLabels show count (%% of state %s total)", type_lbl, type_lbl),
+      x = "Share of CUs (%)", y = NULL,
+      caption = sprintf("States ranked by %% moved up (highest at top)  |  Labels hidden if segment < 5%%", type_lbl)
+    ) +
+    theme_pub
+  save_pub(p_g2, sprintf("G2_%s_state_migration.pdf", tolower(type_lbl)), w = 14, h = 10)
+}
 
 # ── Chart G3: Average Category Shift (dot plot) ──────────
 message("  Chart G3: Average category shift...")
