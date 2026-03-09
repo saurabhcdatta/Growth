@@ -260,7 +260,7 @@ for (type_lbl in c("FCU", "FISCU")) {
     mig_by_state[, .(state, n_cus, direction = "Same Category", pct = same_pct, count = same_n)],
     mig_by_state[, .(state, n_cus, direction = "Moved Down",    pct = down_pct, count = down_n)]
   ))
-  mig_long[, state := factor(state, levels = rev(mig_by_state[order(-up_pct), state]))]
+  mig_long[, state := factor(state, levels = rev(mig_by_state[order(-up_n), state]))]
   mig_long[, direction := factor(direction, levels = c("Moved Down", "Same Category", "Moved Up"))]
   mig_long[, label := fifelse(pct >= 5, sprintf("%d (%.0f%%)", count, pct), "")]
 
@@ -280,7 +280,7 @@ for (type_lbl in c("FCU", "FISCU")) {
       title = sprintf("%s Category Migration by State — Top 20 States", type_lbl),
       subtitle = sprintf("What percentage of each state's %ss move up, stay, or move down over 5 years\nLabels show count (%% of state %s total)", type_lbl, type_lbl),
       x = "Share of CUs (%)", y = NULL,
-      caption = sprintf("States ranked by %% moved up (highest at top)  |  Labels hidden if segment < 5%%", type_lbl)
+      caption = sprintf("States ranked by number of %ss moving up (highest at top)  |  Labels hidden if segment < 5%%", type_lbl)
     ) +
     theme_pub
   save_pub(p_g2, sprintf("G2_%s_state_migration.pdf", tolower(type_lbl)), w = 14, h = 10)
