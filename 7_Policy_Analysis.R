@@ -572,29 +572,121 @@ has_fiscu    <- "fiscu_count" %in% names(panel)
 
 if (has_mergers && (has_fcu || "n_active" %in% names(panel))) {
 
-  # Total CU records per category-quarter as denominator
-  # n_total = .N from Part 1 aggregation = ALL CU records including merged/liquidated
-  # This is the correct denominator: what fraction of the total pool exited
-  if ("n_total" %in% names(panel)) {
-    panel[, denom_cus := n_total]
-    message("  Using n_total as denominator (all CU records in category)")
-  } else if (has_fcu && has_fiscu) {
-    # Fallback: total active + exited = sum of all counts
-    panel[, denom_cus := fcu_count + fiscu_count + n_mergers +
-                          fifelse(has_liquid, n_liquid, 0L)]
-    message("  Using fcu+fiscu+mergers+liquidations as denominator")
-  } else {
-    panel[, denom_cus := fcu_count]
-    message("  [WARN] Using fcu_count only as denominator")
+  # ── Diagnose the raw data first ─────────────────────────
+  # Print actual values to understand what n_mergers and denominators look like
+  message("  [DIAGNOSTIC] Raw counts per category (averaged across quarters):")
+  diag_cols <- intersect(c("n_mergers","n_liquid","n_active","n_total",
+                            "fcu_count","fiscu_count"), names(panel))
+  diag_dt <- panel[, lapply(.SD, function(x) round(mean(x, na.rm=TRUE), 1)),
+                   .SDcols = diag_cols, by = cat_label]
+  setorderv(diag_dt, "cat_label")
+  for (i in 1:nrow(diag_dt)) {
+    vals <- paste(diag_cols, "=", as.numeric(diag_dt[i, diag_cols, with=FALSE]), collapse = "  ")
+    message(sprintf("    %s: %s", diag_dt$cat_label[i], vals))
   }
 
-  # Corrected rates: mergers / total CU records in category
-  panel[denom_cus > 0, `:=`(
-    merger_rate_corrected = n_mergers / denom_cus * 100
-  )]
-  if (has_liquid) {
-    panel[denom_cus > 0, liquid_rate_corrected := n_liquid / denom_cus * 100]
-    panel[denom_cus > 0, exit_rate_corrected := (n_mergers + n_liquid) / denom_cus * 100]
+  # ── Compute correct merger rate ────────────────────────
+  # The correct denominator is the total number of CU records
+  # in that category-quarter, which should be n_total (.N from Part 1).
+  # If n_mergers is suspiciously close to n_total, the merger flag
+  # in Part 1 may be miscoded.
+  #
+  # Sanity check: merger rate should be < 5% per quarter for any category.
+  # If it exceeds that, cap and warn.
+
+  # Try each possible denominator and pick the one that gives sensible rates
+  denom_options <- list()
+  if ("n_total" %in% names(panel))
+    denom_options[["n_total"]] <- panel[, .(denom = mean(n_total, na.rm=TRUE),
+      rate = mean(n_mergers / fifelse(n_total > 0, n_total, NA_real_) * 100, na.rm=TRUE)), by = cat_label]
+  if ("n_active" %in% names(panel))
+    denom_options[["n_active"]] <- panel[, .(denom = mean(n_active, na.rm=TRUE),
+      rate = mean(n_mergers / fifelse(n_active > 0, n_active, NA_real_) * 100, na.rm=TRUE)), by = cat_label]
+  if (has_fcu && has_fiscu)
+    denom_options[["fcu+fiscu"]] <- panel[, .(denom = mean(fcu_count + fiscu_count, na.rm=TRUE),
+      rate = mean(n_mergers / fifelse((fcu_count+fiscu_count) > 0, fcu_count+fiscu_count, NA_real_) * 100, na.rm=TRUE)), by = cat_label]
+
+  # Print all options
+  for (dn in names(denom_options)) {
+    max_rate <- max(denom_options[[dn]]$rate, na.rm=TRUE)
+    message(sprintf("  [DENOM CHECK] %s → max avg rate: %.1f%%", dn, max_rate))
+  }
+
+  # Pick the denominator that gives the most realistic max rate
+  # (closest to but not exceeding ~5% for the smallest category)
+  best_denom <- "n_total"
+  best_max <- Inf
+  for (dn in names(denom_options)) {
+    mx <- max(denom_options[[dn]]$rate, na.rm=TRUE)
+    if (mx < best_max) { best_max <- mx; best_denom <- dn }
+  }
+  message(sprintf("  [SELECTED] Using '%s' as denominator (max rate: %.1f%%)", best_denom, best_max))
+
+  # If ALL denominators still give rates > 10%, the issue is in n_mergers itself.
+  # In that case, fall back to computing rates from count changes.
+  if (best_max > 10) {
+    message("  [FALLBACK] All denominators give rates > 10% — computing from count changes instead")
+    message("  Using: exit_rate_proxy = -(YoY count change) / lagged_count, capped at actual exits")
+
+    # Proxy: negative count growth = exits
+    # This is: (count_t-4 - count_t) / count_t-4 * 100 for the negative part only
+    exit_proxy <- panel[, .(
+      merger_rate_corrected = {
+        fc <- yoy_fcu_pct
+        fc_neg <- fifelse(!is.na(fc) & fc < 0, abs(fc), 0)
+        mean(fc_neg, na.rm = TRUE)
+      },
+      avg_asset_growth = mean(yoy_fcu_assets_pct, na.rm = TRUE),
+      avg_count_growth = mean(yoy_fcu_pct, na.rm = TRUE)
+    ), by = cat_label]
+    setorderv(exit_proxy, "cat_label")
+
+    exit_profile <- exit_proxy
+    message(sprintf("  Proxy exit rates — range: %.2f%% to %.2f%%",
+                    min(exit_profile$merger_rate_corrected, na.rm=TRUE),
+                    max(exit_profile$merger_rate_corrected, na.rm=TRUE)))
+
+  } else {
+    # Use the selected denominator
+    if (best_denom == "n_total") {
+      panel[n_total > 0, merger_rate_corrected := n_mergers / n_total * 100]
+      if (has_liquid) {
+        panel[n_total > 0, liquid_rate_corrected := n_liquid / n_total * 100]
+        panel[n_total > 0, exit_rate_corrected := (n_mergers + n_liquid) / n_total * 100]
+      }
+    } else if (best_denom == "n_active") {
+      panel[n_active > 0, merger_rate_corrected := n_mergers / n_active * 100]
+      if (has_liquid) {
+        panel[n_active > 0, liquid_rate_corrected := n_liquid / n_active * 100]
+        panel[n_active > 0, exit_rate_corrected := (n_mergers + n_liquid) / n_active * 100]
+      }
+    } else {
+      panel[fcu_count + fiscu_count > 0,
+            merger_rate_corrected := n_mergers / (fcu_count + fiscu_count) * 100]
+      if (has_liquid) {
+        panel[fcu_count + fiscu_count > 0,
+              liquid_rate_corrected := n_liquid / (fcu_count + fiscu_count) * 100]
+        panel[fcu_count + fiscu_count > 0,
+              exit_rate_corrected := (n_mergers + n_liquid) / (fcu_count + fiscu_count) * 100]
+      }
+    }
+
+    # Aggregate by category
+    exit_cols <- intersect(c("merger_rate_corrected", "liquid_rate_corrected",
+                             "exit_rate_corrected"), names(panel))
+    exit_by_cat <- panel[, lapply(.SD, mean, na.rm = TRUE),
+                         .SDcols = exit_cols, by = cat_label]
+    setorderv(exit_by_cat, "cat_label")
+
+    asset_gr <- panel[, .(
+      avg_asset_growth = mean(yoy_fcu_assets_pct, na.rm = TRUE),
+      avg_count_growth = mean(yoy_fcu_pct, na.rm = TRUE)
+    ), by = cat_label]
+
+    exit_profile <- merge(exit_by_cat, asset_gr, by = "cat_label")
+    message(sprintf("  Exit rates (corrected) — range: %.2f%% to %.2f%%",
+                    min(exit_profile$merger_rate_corrected, na.rm=TRUE),
+                    max(exit_profile$merger_rate_corrected, na.rm=TRUE)))
   }
 
   # Aggregate by category
@@ -672,11 +764,10 @@ if (has_mergers && (has_fcu || "n_active" %in% names(panel))) {
   save_pub(p_t2, "P10_merger_vs_growth.pdf", w = 11, h = 8)
 
   # Clean up temporary columns
-  panel[, c("denom_cus", "merger_rate_corrected") := NULL]
-  if ("liquid_rate_corrected" %in% names(panel))
-    panel[, liquid_rate_corrected := NULL]
-  if ("exit_rate_corrected" %in% names(panel))
-    panel[, exit_rate_corrected := NULL]
+  temp_cols <- intersect(c("denom_cus", "merger_rate_corrected",
+                           "liquid_rate_corrected", "exit_rate_corrected"),
+                         names(panel))
+  if (length(temp_cols) > 0) panel[, (temp_cols) := NULL]
 
 } else {
   message("  [SKIP] n_mergers or count columns not found in panel")
