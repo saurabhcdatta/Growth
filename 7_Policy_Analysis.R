@@ -572,22 +572,29 @@ has_fiscu    <- "fiscu_count" %in% names(panel)
 
 if (has_mergers && (has_fcu || "n_active" %in% names(panel))) {
 
-  # Total CU count per category-quarter as denominator
-  if ("n_active" %in% names(panel)) {
-    panel[, total_cus := n_active]
+  # Total CU records per category-quarter as denominator
+  # n_total = .N from Part 1 aggregation = ALL CU records including merged/liquidated
+  # This is the correct denominator: what fraction of the total pool exited
+  if ("n_total" %in% names(panel)) {
+    panel[, denom_cus := n_total]
+    message("  Using n_total as denominator (all CU records in category)")
   } else if (has_fcu && has_fiscu) {
-    panel[, total_cus := fcu_count + fiscu_count]
+    # Fallback: total active + exited = sum of all counts
+    panel[, denom_cus := fcu_count + fiscu_count + n_mergers +
+                          fifelse(has_liquid, n_liquid, 0L)]
+    message("  Using fcu+fiscu+mergers+liquidations as denominator")
   } else {
-    panel[, total_cus := fcu_count]
+    panel[, denom_cus := fcu_count]
+    message("  [WARN] Using fcu_count only as denominator")
   }
 
-  # Corrected rates: mergers / total CUs in category
-  panel[total_cus > 0, `:=`(
-    merger_rate_corrected = n_mergers / total_cus * 100
+  # Corrected rates: mergers / total CU records in category
+  panel[denom_cus > 0, `:=`(
+    merger_rate_corrected = n_mergers / denom_cus * 100
   )]
   if (has_liquid) {
-    panel[total_cus > 0, liquid_rate_corrected := n_liquid / total_cus * 100]
-    panel[total_cus > 0, exit_rate_corrected := (n_mergers + n_liquid) / total_cus * 100]
+    panel[denom_cus > 0, liquid_rate_corrected := n_liquid / denom_cus * 100]
+    panel[denom_cus > 0, exit_rate_corrected := (n_mergers + n_liquid) / denom_cus * 100]
   }
 
   # Aggregate by category
@@ -665,7 +672,7 @@ if (has_mergers && (has_fcu || "n_active" %in% names(panel))) {
   save_pub(p_t2, "P10_merger_vs_growth.pdf", w = 11, h = 8)
 
   # Clean up temporary columns
-  panel[, c("total_cus", "merger_rate_corrected") := NULL]
+  panel[, c("denom_cus", "merger_rate_corrected") := NULL]
   if ("liquid_rate_corrected" %in% names(panel))
     panel[, liquid_rate_corrected := NULL]
   if ("exit_rate_corrected" %in% names(panel))
