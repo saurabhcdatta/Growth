@@ -920,8 +920,8 @@ message("  DISAGGREGATED FORECASTING COMPLETE")
 message("============================================================")
 message(sprintf("  CUs forecast: %s / %s (%.1f%%)",
                 format(nrow(forecasts), big.mark=","),
-                format(length(cu_list), big.mark=","),
-                nrow(forecasts) / length(cu_list) * 100))
+                format(n_total_eligible, big.mark=","),
+                nrow(forecasts) / max(n_total_eligible, 1) * 100))
 message(sprintf("  FCU:   %s forecasts", format(nrow(fc_fcu), big.mark=",")))
 message(sprintf("  FISCU: %s forecasts", format(nrow(fc_fiscu), big.mark=",")))
 message("")
