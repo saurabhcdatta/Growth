@@ -234,9 +234,9 @@ qcew_state <- qcew_state[year >= START_YEAR_DL][order(state_code, yyyyqq)]
 
 # ── B1. Normalized continuous (within-quarter, 0-1) ──────────────────────────
 qcew_state[, oil_exposure_cont := {
-  mn  <- min(mining_emp_share, na.rm=TRUE)
-  rng <- max(mining_emp_share, na.rm=TRUE) - mn
-  fifelse(rng > 0, (mining_emp_share - mn)/rng, 0)
+  mn  <- min(mining_emp_share, na.rm = TRUE)
+  rng <- max(mining_emp_share, na.rm = TRUE) - mn
+  if (is.finite(rng) && rng > 0) (mining_emp_share - mn) / rng else rep(0, .N)
 }, by = yyyyqq]
 
 # ── B2. Binary thresholds ─────────────────────────────────────────────────────
