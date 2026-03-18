@@ -166,25 +166,65 @@ load_frb <- function(path, prefix) {
   msg("  Date column: '%s'", date_col)
 
   # ── Parse dates ───────────────────────────────────────────────────────────
+  # FRB Excel Date column is "YYYY.Q" format (e.g. 1975.1, 2005.4)
+  # NOT a standard date — year = floor, quarter = decimal part × 10
   dv <- raw[[date_col]]
-  if (is.numeric(dv)) {
-    dates <- as.Date(dv, origin="1899-12-30")
-  } else {
-    d_chr <- as.character(dv)
-    dates <- suppressWarnings(as.Date(d_chr))
-    if (all(is.na(dates))) {  # try YYYY Qn / YYYYQn
-      yr  <- as.integer(str_extract(d_chr, "\\d{4}"))
-      qn  <- as.integer(str_extract(d_chr, "(?<=[Qq])\\d"))
-      mo  <- c("1"="01","2"="04","3"="07","4"="10")[as.character(qn)]
-      dates <- as.Date(paste(yr, mo, "01", sep="-"))
+
+  parse_frb_date <- function(x) {
+    # Convert to numeric regardless of storage type
+    x_num <- suppressWarnings(as.numeric(as.character(x)))
+
+    # Check if it looks like YYYY.Q  (year 1900-2100, decimal 0.1-0.4)
+    yr_part <- floor(x_num)
+    qn_part <- round((x_num - yr_part) * 10)
+
+    valid <- !is.na(x_num) & yr_part >= 1900 & yr_part <= 2100 &
+             qn_part >= 1 & qn_part <= 4
+
+    if (mean(valid, na.rm = TRUE) > 0.8) {
+      # YYYY.Q format confirmed
+      mo <- c("1"="01","2"="04","3"="07","4"="10")[as.character(qn_part)]
+      dates <- as.Date(paste(yr_part, mo, "01", sep="-"))
+      attr(dates, "year_src")    <- yr_part
+      attr(dates, "quarter_src") <- qn_part
+      return(dates)
     }
+
+    # Fallback 1: Excel numeric serial (e.g. 42005 = a real date)
+    if (is.numeric(x)) {
+      d <- suppressWarnings(as.Date(x, origin = "1899-12-30"))
+      if (mean(!is.na(d)) > 0.8) return(d)
+    }
+
+    # Fallback 2: ISO string "YYYY-MM-DD" or "YYYY/MM/DD"
+    d_chr <- as.character(x)
+    d <- suppressWarnings(as.Date(d_chr))
+    if (mean(!is.na(d), na.rm = TRUE) > 0.8) return(d)
+
+    # Fallback 3: "YYYY Qn" / "YYYYQn" string
+    yr2 <- as.integer(str_extract(d_chr, "\\d{4}"))
+    qn2 <- as.integer(str_extract(d_chr, "(?i)(?<=[q ])\\d"))
+    mo2 <- c("1"="01","2"="04","3"="07","4"="10")[as.character(qn2)]
+    d   <- suppressWarnings(as.Date(paste(yr2, mo2, "01", sep="-")))
+    if (mean(!is.na(d), na.rm = TRUE) > 0.8) return(d)
+
+    stop(paste("Cannot parse Date column in", path,
+               "\n  Sample values:", paste(head(d_chr, 5), collapse=", ")))
   }
 
+  dates <- parse_frb_date(dv)
+
+  # Extract year/quarter directly from YYYY.Q source when possible
+  dv_num  <- suppressWarnings(as.numeric(as.character(dv)))
+  yr_src  <- floor(dv_num)
+  qn_src  <- round((dv_num - yr_src) * 10)
+  use_src <- !is.na(dv_num) & yr_src >= 1900 & qn_src >= 1 & qn_src <= 4
+
   raw[, date_parsed := dates]
-  raw <- raw[!is.na(date_parsed) & date_parsed >= as.Date("2004-01-01")]
-  raw[, `:=`(year    = year(date_parsed),
-             quarter = quarter(date_parsed),
-             yyyyqq  = year(date_parsed)*100L + quarter(date_parsed))]
+  raw[, year    := fifelse(use_src, as.integer(yr_src),    year(dates))]
+  raw[, quarter := fifelse(use_src, as.integer(qn_src),    quarter(dates))]
+  raw[, yyyyqq  := year * 100L + quarter]
+  raw <- raw[!is.na(date_parsed) & year >= 2004]
 
   # ── Identify numeric macro columns ────────────────────────────────────────
   id_cols    <- c(date_col, "date_parsed", "year", "quarter", "yyyyqq")
