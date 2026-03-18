@@ -156,19 +156,21 @@ cu_outcomes <- intersect(c("dq_rate","chg_tot_lns_ratio","netintmrg",
 
 msg("  CU outcomes available: %s", paste(cu_outcomes, collapse=", "))
 
-# Episode rectangles helper
+# Episode rectangles helper — returns flat list for ggplot layer addition
 ep_rects <- function(episodes = EPISODES) {
-  list(
-    mapply(function(xmn, xmx, fl) {
-      annotate("rect", xmin=xmn, xmax=xmx,
-               ymin=-Inf, ymax=Inf, fill=fl, alpha=0.35)
-    }, episodes$xmin, episodes$xmax, episodes$fill, SIMPLIFY=FALSE),
-    mapply(function(xmn, xmx, lb) {
-      annotate("text", x=xmn + (xmx-xmn)/2,
-               y=Inf, label=lb, vjust=1.3, size=2.5,
-               colour="#888888", fontface="italic")
-    }, episodes$xmin, episodes$xmax, episodes$label, SIMPLIFY=FALSE)
-  )
+  rects <- mapply(function(xmn, xmx, fl) {
+    annotate("rect", xmin=xmn, xmax=xmx,
+             ymin=-Inf, ymax=Inf, fill=fl, alpha=0.35)
+  }, episodes$xmin, episodes$xmax, episodes$fill, SIMPLIFY=FALSE)
+
+  texts <- mapply(function(xmn, xmx, lb) {
+    annotate("text", x=xmn + (xmx-xmn)/2,
+             y=Inf, label=lb, vjust=1.3, size=2.5,
+             colour="#888888", fontface="italic")
+  }, episodes$xmin, episodes$xmax, episodes$label, SIMPLIFY=FALSE)
+
+  # Flatten to single list so ggplot + list() works correctly
+  c(rects, texts)
 }
 
 # =============================================================================
@@ -227,8 +229,10 @@ make_dual_axis <- function(outcome_var, outcome_label, y_fmt = waiver()) {
   if (!outcome_var %in% names(agg)) return(NULL)
 
   d <- agg[!is.na(get(outcome_var)) & !is.na(pbrent)]
-  oil_scale <- max(abs(d[[outcome_var]]), na.rm=TRUE) /
-               max(abs(d$pbrent),         na.rm=TRUE)
+  ov_max <- max(abs(d[[outcome_var]]), na.rm=TRUE)
+  pb_max <- max(abs(d$pbrent),         na.rm=TRUE)
+  oil_scale <- if (is.finite(ov_max) && is.finite(pb_max) && pb_max > 0)
+                 ov_max / pb_max else 1
 
   ggplot(d, aes(x = cal_date)) +
     ep_rects() +
