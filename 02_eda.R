@@ -341,6 +341,23 @@ save_plot(p03, "03_cross_correlation.png", w=11, h=6.5)
 hdr("Chart 04: Direct vs indirect effect")
 
 if ("cu_group" %in% names(panel)) {
+
+  # Diagnostic: show group distribution
+  grp_dist <- panel[, .N, by=cu_group][order(cu_group)]
+  cat("  cu_group distribution in panel:\n")
+  print(grp_dist)
+
+  # If only one group or all NA — use oil_exposure_bin as fallback grouping
+  n_groups <- panel[!is.na(cu_group), uniqueN(cu_group)]
+  if (n_groups < 2) {
+    msg("  WARNING: cu_group has < 2 levels — using oil_exposure_bin as grouping")
+    if ("oil_exposure_bin" %in% names(panel)) {
+      panel[, cu_group := fifelse(oil_exposure_bin == 1L,
+                                   "Direct (oil-state)",
+                                   "Non-Oil State")]
+    }
+  }
+
   agg_grp <- agg_group(panel,
                         intersect(cu_outcomes, names(panel)),
                         "cu_group")
@@ -348,14 +365,22 @@ if ("cu_group" %in% names(panel)) {
                    mac_spine[, .(yyyyqq, pbrent, yoy_oil)],
                    by="yyyyqq", all.x=TRUE)
 
-  grp_cols <- c("Direct"     = COL_DIRECT,
-                "Indirect"   = COL_INDIR,
-                "Negligible" = "#aaaaaa")
+  # Build colour map dynamically from available groups
+  all_grp_cols <- c("Direct"              = COL_DIRECT,
+                    "Direct (oil-state)"  = COL_DIRECT,
+                    "Indirect"            = COL_INDIR,
+                    "Non-Oil State"       = COL_INDIR,
+                    "Negligible"          = "#aaaaaa")
+  present_grps <- unique(agg_grp$cu_group)
+  grp_cols     <- all_grp_cols[names(all_grp_cols) %in% present_grps]
 
   make_group_plot <- function(v, lab, y_fmt=waiver()) {
     if (!v %in% names(agg_grp)) return(NULL)
-    ggplot(agg_grp[!is.na(get(v)) & cu_group != "Negligible"],
-           aes(x=cal_date, y=get(v), colour=cu_group)) +
+    plot_data <- agg_grp[!is.na(get(v)) &
+                           !is.na(cu_group) &
+                           !cu_group %in% c("Negligible")]
+    if (nrow(plot_data) == 0) return(NULL)
+    ggplot(plot_data, aes(x=cal_date, y=get(v), colour=cu_group)) +
       ep_rects() +
       geom_line(linewidth=0.8) +
       scale_colour_manual(values=grp_cols, name="CU group") +
@@ -363,7 +388,7 @@ if ("cu_group" %in% names(panel)) {
       scale_y_continuous(labels=y_fmt) +
       labs(title=lab, x=NULL, y=lab) +
       theme_pub() +
-      theme(legend.position="none")
+      theme(legend.position="bottom")
   }
 
   p04_panels <- list(
@@ -791,6 +816,401 @@ desc_tbl <- panel[!is.na(get(group_col)),
 
 cat("\n  Descriptive statistics by CU group (mean (sd)):\n")
 print(t(desc_tbl), quote=FALSE)
+
+
+# =============================================================================
+# SEVERELY ADVERSE SCENARIO CHARTS  (Charts 11-15)
+# =============================================================================
+hdr("SECTION: Severely Adverse Scenario Visuals")
+
+# Load severely adverse macro if not already in memory
+if (!exists("macro_severe") || !is.data.table(macro_severe)) {
+  if (file.exists("Data/macro_severe.rds")) {
+    macro_severe <- readRDS("Data/macro_severe.rds")
+    setDT(macro_severe)
+    macro_severe[, cal_date := as.Date(paste(year,
+                                              Q_MONTH[as.character(quarter)],
+                                              "01", sep="-"))]
+    msg("  Loaded macro_severe.rds")
+  } else {
+    msg("  WARNING: macro_severe.rds not found — skipping severe scenario charts")
+    macro_severe <- NULL
+  }
+}
+
+if (!is.null(macro_severe) && nrow(macro_severe) > 0) {
+
+  # ── Build unified macro comparison spine ──────────────────────────────────
+  # Historical: use macro_base up to last observed quarter
+  # Projection: from first CCAR quarter onwards — both baseline and severe
+
+  last_hist <- panel[, max(yyyyqq)]
+  hist_date <- panel[yyyyqq == last_hist, first(cal_date)]
+
+  # Key macro vars — build scenario comparison table
+  base_vars   <- c("macro_base_pbrent","macro_base_lurc","macro_base_pcpi",
+                   "macro_base_rmtg","macro_base_yield_curve",
+                   "macro_base_fomc_regime","macro_base_yoy_oil",
+                   "macro_base_real_rate","macro_base_hike_run")
+  severe_vars <- gsub("macro_base_","macro_severe_", base_vars)
+
+  base_spine   <- mac_spine[!is.na(pbrent)]
+  severe_spine <- macro_severe[cal_date > hist_date]
+
+  # Rename severe cols to common names for plotting
+  sev_rename <- function(dt, pfx="macro_severe_") {
+    nms <- names(dt)
+    new <- gsub(pfx, "sev_", nms)
+    setnames(dt, nms, new)
+    dt
+  }
+
+  # Forward projection window
+  proj_start <- min(macro_base[cal_date > hist_date, cal_date], na.rm=TRUE)
+  proj_end   <- max(macro_base$cal_date, na.rm=TRUE)
+
+  base_proj   <- macro_base[cal_date >= proj_start]
+  severe_proj <- macro_severe[cal_date >= proj_start & !is.na(cal_date)]
+
+  msg("  Historical through: %s | Projection: %s to %s",
+      format(hist_date, "%Y-Q%q"),
+      format(proj_start, "%Y-%m"),
+      format(proj_end,   "%Y-%m"))
+
+  # ── Shading for projection window ─────────────────────────────────────────
+  proj_rect <- list(
+    annotate("rect",
+             xmin  = proj_start, xmax = proj_end,
+             ymin  = -Inf,       ymax = Inf,
+             fill  = "#f0f4ff",  alpha = 0.5),
+    annotate("text",
+             x     = proj_start + (proj_end - proj_start)/2,
+             y     = Inf, vjust = 1.5, size = 2.8,
+             label = "← CCAR 2026 Projection →",
+             colour = "#6688aa", fontface = "italic")
+  )
+
+  vline_hist <- geom_vline(xintercept = as.numeric(proj_start),
+                            linetype = "dashed",
+                            colour = "#888888", linewidth = 0.5)
+
+  # ==========================================================================
+  # CHART 11 — PBRENT: Historical + Baseline vs Severely Adverse
+  # ==========================================================================
+  hdr("Chart 11: PBRENT scenario comparison")
+
+  pb_base <- macro_base[!is.na(macro_base_pbrent),
+                          .(cal_date, pbrent = macro_base_pbrent,
+                            scenario = "Baseline")]
+  pb_sev  <- macro_severe[!is.na(macro_severe_pbrent),
+                            .(cal_date, pbrent = macro_severe_pbrent,
+                              scenario = "Severely Adverse")]
+  pb_hist <- mac_spine[!is.na(pbrent) & cal_date <= hist_date,
+                        .(cal_date, pbrent, scenario = "Historical")]
+
+  pb_all  <- rbindlist(list(pb_hist, pb_base, pb_sev), fill=TRUE)
+  pb_all  <- pb_all[!duplicated(paste(cal_date, scenario))]
+
+  SCEN_COLS <- c("Historical"        = "#1a1a1a",
+                 "Baseline"          = COL_DIRECT,
+                 "Severely Adverse"  = COL_NEG)
+  SCEN_LT   <- c("Historical"        = "solid",
+                 "Baseline"          = "dashed",
+                 "Severely Adverse"  = "dashed")
+
+  p11 <- ggplot(pb_all, aes(x=cal_date, y=pbrent,
+                              colour=scenario, linetype=scenario)) +
+    proj_rect +
+    vline_hist +
+    ep_rects() +
+    geom_line(linewidth=0.85) +
+    scale_colour_manual(values=SCEN_COLS, name="Scenario") +
+    scale_linetype_manual(values=SCEN_LT, name="Scenario") +
+    scale_x_date(date_breaks="2 years", date_labels="%Y") +
+    scale_y_continuous(labels=dollar_format(prefix="$",suffix="/bbl")) +
+    labs(title    = "FIGURE 11 — Brent Oil Price: Historical + CCAR 2026 Scenarios",
+         subtitle = "Shaded blue = CCAR projection window | Severely Adverse: sharp PBRENT decline",
+         x=NULL, y="$/barrel",
+         caption  = "Source: FRB CCAR 2026 Baseline & Severely Adverse scenarios") +
+    theme_pub()
+
+  save_plot(p11, "11_pbrent_scenarios.png", w=11, h=6)
+
+  # ==========================================================================
+  # CHART 12 — Key Macro Paths: Baseline vs Severely Adverse (4-panel)
+  # ==========================================================================
+  hdr("Chart 12: Macro scenario comparison — 4 key variables")
+
+  make_scen_plot <- function(base_col, sev_col, hist_col=NULL,
+                              title, y_lab, y_fmt=waiver(),
+                              hist_dt=NULL) {
+
+    # Historical line (from macro_spine or passed dt)
+    if (is.null(hist_dt)) {
+      h_col <- intersect(hist_col, names(mac_spine))[1]
+      hist_d <- if (!is.na(h_col) && !is.null(h_col))
+        mac_spine[!is.na(get(h_col)) & cal_date <= hist_date,
+                   .(cal_date, value=get(h_col), scenario="Historical")]
+      else NULL
+    } else {
+      hist_d <- hist_dt
+    }
+
+    # Baseline projection
+    b_col <- intersect(base_col, names(macro_base))[1]
+    base_d <- if (!is.na(b_col))
+      macro_base[!is.na(get(b_col)) & cal_date >= proj_start,
+                  .(cal_date, value=get(b_col), scenario="Baseline")]
+    else NULL
+
+    # Severe projection
+    s_col <- intersect(sev_col, names(macro_severe))[1]
+    sev_d <- if (!is.na(s_col))
+      macro_severe[!is.na(get(s_col)) & cal_date >= proj_start,
+                    .(cal_date, value=get(s_col), scenario="Severely Adverse")]
+    else NULL
+
+    all_d <- rbindlist(Filter(Negate(is.null),
+                               list(hist_d, base_d, sev_d)), fill=TRUE)
+    if (nrow(all_d) == 0) return(NULL)
+
+    ggplot(all_d, aes(x=cal_date, y=value,
+                       colour=scenario, linetype=scenario)) +
+      proj_rect +
+      vline_hist +
+      geom_line(linewidth=0.8) +
+      scale_colour_manual(values=SCEN_COLS, name=NULL) +
+      scale_linetype_manual(values=SCEN_LT,  name=NULL) +
+      scale_x_date(date_breaks="3 years", date_labels="%Y") +
+      scale_y_continuous(labels=y_fmt) +
+      labs(title=title, x=NULL, y=y_lab) +
+      theme_pub() +
+      theme(legend.position="none")
+  }
+
+  p12_panels <- list(
+    # PBRENT
+    make_scen_plot("macro_base_pbrent",      "macro_severe_pbrent",
+                   "pbrent",
+                   "Brent Oil ($/bbl)",      "$/bbl",
+                   dollar_format(prefix="$")),
+    # Unemployment
+    make_scen_plot("macro_base_lurc",        "macro_severe_lurc",
+                   "lurc",
+                   "Unemployment Rate (LURC)", "%",
+                   number_format(accuracy=0.1, suffix="%")),
+    # CPI
+    make_scen_plot("macro_base_pcpi",        "macro_severe_pcpi",
+                   "pcpi",
+                   "Consumer Price Index (PCPI)", "Index",
+                   number_format(accuracy=0.1)),
+    # Mortgage rate
+    make_scen_plot("macro_base_rmtg",        "macro_severe_rmtg",
+                   "rmtg",
+                   "30Y Fixed Mortgage Rate (RMTG)", "%",
+                   number_format(accuracy=0.1, suffix="%"))
+  )
+  p12_panels <- Filter(Negate(is.null), p12_panels)
+
+  # Shared legend
+  leg_data <- data.frame(
+    cal_date = Sys.Date(), value = 1,
+    scenario = c("Historical","Baseline","Severely Adverse"))
+  leg_p <- ggplot(leg_data, aes(cal_date, value,
+                                  colour=scenario, linetype=scenario)) +
+    geom_line() +
+    scale_colour_manual(values=SCEN_COLS, name="Scenario") +
+    scale_linetype_manual(values=SCEN_LT,  name="Scenario") +
+    theme_pub() + theme(legend.position="bottom")
+
+  p12 <- wrap_plots(p12_panels, ncol=2) +
+    plot_annotation(
+      title    = "FIGURE 12 — Key Macro Variables: Baseline vs Severely Adverse (CCAR 2026)",
+      subtitle = "Solid = historical | Dashed = CCAR projection | Blue shading = projection window",
+      caption  = "Source: FRB CCAR 2026 Baseline & Severely Adverse scenarios",
+      theme    = theme(plot.title    = element_text(face="bold", size=12),
+                       plot.subtitle = element_text(size=9, colour="#555"))
+    )
+  save_plot(p12, "12_macro_scenario_comparison.png", w=13, h=10)
+
+  # ==========================================================================
+  # CHART 13 — Yield Curve & Rate Environment: Baseline vs Severe
+  # ==========================================================================
+  hdr("Chart 13: Yield curve & rate scenario")
+
+  p13_panels <- list(
+    make_scen_plot("macro_base_yield_curve",  "macro_severe_yield_curve",
+                   "yield_curve" %||% NULL,
+                   "Yield Curve (10Y-3M, bps)", "bps",
+                   number_format(accuracy=0.1)),
+    make_scen_plot("macro_base_real_rate",    "macro_severe_real_rate",
+                   "real_rate" %||% NULL,
+                   "Real Fed Funds Rate (%)", "%",
+                   number_format(accuracy=0.1, suffix="%")),
+    make_scen_plot("macro_base_fomc_regime",  "macro_severe_fomc_regime",
+                   NULL,
+                   "FOMC Regime (+1 Hike / -1 Cut)", "",
+                   number_format(accuracy=1))
+  )
+  p13_panels <- Filter(Negate(is.null), p13_panels)
+
+  if (length(p13_panels) >= 2) {
+    p13 <- wrap_plots(p13_panels, ncol=2) +
+      plot_annotation(
+        title    = "FIGURE 13 — Rate Environment & Yield Curve: CCAR 2026 Scenarios",
+        subtitle = "NIM compression risk: flat/inverted curve + hiking regime = CoF squeeze",
+        caption  = "Source: FRB CCAR 2026; Derived: yield_curve = RS10Y-RS3M; real_rate = RFF-PCPI_yoy",
+        theme    = theme(plot.title    = element_text(face="bold", size=12),
+                         plot.subtitle = element_text(size=9, colour="#555"))
+      )
+    save_plot(p13, "13_rate_scenario.png", w=13, h=8)
+  }
+
+  # ==========================================================================
+  # CHART 14 — Scenario Divergence: How Different Are the Two Paths?
+  # ==========================================================================
+  hdr("Chart 14: Scenario divergence")
+
+  # Compute gap: severe minus baseline for each key variable
+  diverge_vars <- list(
+    list(b="macro_base_pbrent",      s="macro_severe_pbrent",
+         lab="PBRENT Gap (Severe-Base, $/bbl)"),
+    list(b="macro_base_lurc",        s="macro_severe_lurc",
+         lab="Unemployment Gap (pp)"),
+    list(b="macro_base_pcpi",        s="macro_severe_pcpi",
+         lab="CPI Gap (index points)"),
+    list(b="macro_base_rmtg",        s="macro_severe_rmtg",
+         lab="Mortgage Rate Gap (pp)")
+  )
+
+  div_list <- lapply(diverge_vars, function(v) {
+    bc <- intersect(v$b, names(macro_base))[1]
+    sc <- intersect(v$s, names(macro_severe))[1]
+    if (is.na(bc) || is.na(sc)) return(NULL)
+
+    base_d <- macro_base[cal_date >= proj_start & !is.na(get(bc)),
+                          .(cal_date, base_val = get(bc))]
+    sev_d  <- macro_severe[cal_date >= proj_start & !is.na(get(sc)),
+                             .(cal_date, sev_val  = get(sc))]
+    mrg    <- merge(base_d, sev_d, by="cal_date", all=FALSE)
+    mrg[, `:=`(gap = sev_val - base_val, variable = v$lab)]
+    mrg[, .(cal_date, gap, variable)]
+  })
+  div_dt <- rbindlist(Filter(Negate(is.null), div_list))
+
+  if (nrow(div_dt) > 0) {
+    p14 <- ggplot(div_dt, aes(x=cal_date, y=gap,
+                               fill=gap < 0)) +
+      geom_col(width=70, show.legend=FALSE) +
+      geom_hline(yintercept=0, linewidth=0.4) +
+      scale_fill_manual(values=c("TRUE"=COL_NEG, "FALSE"=COL_POS)) +
+      scale_x_date(date_breaks="1 year", date_labels="%Y") +
+      facet_wrap(~variable, scales="free_y", ncol=2) +
+      labs(title    = "FIGURE 14 — Scenario Divergence: Severely Adverse minus Baseline",
+           subtitle = "Red = severe worse than baseline | Green = severe better | Width of gap = stress magnitude",
+           caption  = "Source: FRB CCAR 2026 Baseline & Severely Adverse",
+           x=NULL, y="Difference (Severe - Baseline)") +
+      theme_pub() +
+      theme(strip.text=element_text(size=8, face="bold"))
+    save_plot(p14, "14_scenario_divergence.png", w=13, h=8)
+  }
+
+  # ==========================================================================
+  # CHART 15 — Implied CU Stress Under Severely Adverse
+  # (Apply historical oil-CU relationship to severe PBRENT path)
+  # ==========================================================================
+  hdr("Chart 15: Implied CU stress under severely adverse")
+
+  # Use historical cross-correlation coefficients to project implied stress
+  # Simple approach: OLS slope from historical PBRENT YoY vs each CU outcome
+  # Apply that slope to the CCAR severe scenario PBRENT path
+
+  if ("macro_severe_yoy_oil" %in% names(macro_severe) &&
+      nrow(agg) > 0) {
+
+    # Historical slopes: regress each outcome on PBRENT YoY (aggregated)
+    hist_agg <- merge(agg_quarter(panel, cu_outcomes),
+                      mac_spine[, .(yyyyqq, yoy_oil)],
+                      by="yyyyqq", all.x=TRUE)
+
+    plot_outcomes_15 <- intersect(c("dq_rate","netintmrg",
+                                    "insured_share_growth","costfds"),
+                                   cu_outcomes)
+
+    implied_list <- lapply(plot_outcomes_15, function(v) {
+      d <- hist_agg[!is.na(get(v)) & !is.na(yoy_oil)]
+      if (nrow(d) < 20) return(NULL)
+
+      # Historical mean and OLS slope
+      hist_mean  <- mean(d[[v]], na.rm=TRUE)
+      fit        <- lm(as.formula(paste(v, "~ yoy_oil")), data=d)
+      beta       <- coef(fit)["yoy_oil"]
+      hist_sd    <- sd(d[[v]], na.rm=TRUE)
+
+      # Apply slope to CCAR severe projected PBRENT YoY
+      sev_proj <- macro_severe[!is.na(macro_severe_yoy_oil) &
+                                  cal_date >= proj_start,
+                                 .(cal_date,
+                                   yoy_oil = macro_severe_yoy_oil,
+                                   scenario = "Severely Adverse")]
+      base_proj2 <- macro_base[!is.na(macro_base_yoy_oil) &
+                                   cal_date >= proj_start,
+                                  .(cal_date,
+                                    yoy_oil = macro_base_yoy_oil,
+                                    scenario = "Baseline")]
+
+      proj_both <- rbindlist(list(sev_proj, base_proj2))
+      proj_both[, implied := hist_mean + beta * yoy_oil]
+
+      # Historical actual
+      hist_line <- d[, .(cal_date, implied=get(v), scenario="Historical")]
+
+      all_lines <- rbindlist(list(hist_line, proj_both[,.(cal_date,implied,scenario)]))
+      all_lines[, outcome := v]
+      all_lines[, beta_label := sprintf("β=%.3f", beta)]
+      all_lines
+    })
+
+    implied_dt <- rbindlist(Filter(Negate(is.null), implied_list))
+
+    if (nrow(implied_dt) > 0) {
+      implied_dt[, outcome_label := out_labels[outcome]]
+      implied_dt[is.na(outcome_label), outcome_label := outcome]
+
+      p15 <- ggplot(implied_dt,
+                    aes(x=cal_date, y=implied,
+                        colour=scenario, linetype=scenario)) +
+        proj_rect +
+        vline_hist +
+        geom_line(linewidth=0.8) +
+        scale_colour_manual(values=SCEN_COLS, name="Scenario") +
+        scale_linetype_manual(values=SCEN_LT,  name="Scenario") +
+        scale_x_date(date_breaks="2 years", date_labels="%Y") +
+        facet_wrap(~outcome_label, scales="free_y", ncol=2) +
+        geom_text(data=implied_dt[scenario=="Severely Adverse",
+                                    .SD[which.min(cal_date)],
+                                    by=outcome_label],
+                  aes(label=beta_label), hjust=0, vjust=-0.5,
+                  size=2.5, colour=COL_NEG, show.legend=FALSE) +
+        labs(title    = "FIGURE 15 — Implied CU Stress Under CCAR 2026 Severely Adverse Scenario",
+             subtitle = "Projected using historical OLS slope (β) of CU outcome on PBRENT YoY % change",
+             caption  = paste("Note: Simple single-factor projection for illustration.",
+                               "β = historical OLS coefficient on PBRENT YoY.",
+                               "Full VARX model projections in Script 05."),
+             x=NULL, y="Outcome Value") +
+        theme_pub() +
+        theme(strip.text=element_text(size=8.5, face="bold"),
+              legend.position="bottom")
+
+      save_plot(p15, "15_implied_cu_stress_severe.png", w=13, h=10)
+    }
+  }
+
+  msg("  ✓ Severely adverse charts 11-15 complete")
+
+} else {
+  msg("  Severely adverse scenario data not available — charts 11-15 skipped")
+}
 
 # =============================================================================
 # COMPLETE
