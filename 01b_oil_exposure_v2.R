@@ -232,6 +232,12 @@ hdr("SECTION B: Exposure Measures")
 qcew_state[, yyyyqq := year*100L + quarter]
 qcew_state <- qcew_state[year >= START_YEAR_DL][order(state_code, yyyyqq)]
 
+# Ensure key columns are correct types before any joins
+qcew_state[, state_code := as.character(state_code)]
+qcew_state[, yyyyqq     := as.integer(yyyyqq)]
+qcew_state[, year       := as.integer(year)]
+qcew_state[, quarter    := as.integer(quarter)]
+
 # ── B1. Normalized continuous (within-quarter, 0-1) ──────────────────────────
 qcew_state[, oil_exposure_cont := {
   mn  <- min(mining_emp_share, na.rm = TRUE)
@@ -446,6 +452,12 @@ hdr("SECTION E: Save")
 
 # Keep only 2004+ for output (lags handled)
 out <- qcew_state[year >= START_YEAR_DL][order(state_code, yyyyqq)]
+
+# Enforce types on output — state_code must be character for panel joins
+out[, state_code := as.character(state_code)]
+out[, yyyyqq     := as.integer(yyyyqq)]
+out[, year       := as.integer(year)]
+out[, quarter    := as.integer(quarter)]
 
 keep_cols <- c("state_code","fips","yyyyqq","year","quarter",
                "oil_emp","total_emp","mining_emp_share",
