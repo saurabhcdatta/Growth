@@ -370,6 +370,23 @@ if (!is.null(panel04)) {
 ")
   print(panel04[, .N, by=plot_group][order(plot_group)])
 
+  # Emergency fallback: if oil-state group is empty, use hard-coded states
+  n_direct <- panel04[plot_group == "Oil-State CUs (Direct)", .N]
+  if (n_direct == 0) {
+    msg("  WARNING: 0 Direct CU-qtrs — oil_exposure_bin all zero, using state fallback")
+    OIL_FB <- c("TX","ND","LA","AK","WY","OK","NM","CO","WV","PA")
+    sc_col <- intersect(c("state_code","state"), names(panel04))[1]
+    if (!is.na(sc_col)) {
+      panel04[, plot_group := fifelse(
+        toupper(get(sc_col)) %in% OIL_FB,
+        "Oil-State CUs (Direct)",
+        "Non-Oil CUs (Indirect/Spillover)")]
+      cat("  Fallback group distribution:\n")
+      print(panel04[, .N, by=plot_group])
+    }
+  }
+
+
   GRP_COLS04 <- c("Oil-State CUs (Direct)"            = COL_DIRECT,
                    "Non-Oil CUs (Indirect/Spillover)"  = COL_INDIR)
   GRP_LT04   <- c("Oil-State CUs (Direct)"            = "solid",
