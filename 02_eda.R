@@ -824,6 +824,23 @@ print(t(desc_tbl), quote=FALSE)
 hdr("SECTION: Severely Adverse Scenario Visuals")
 
 # Load severely adverse macro if not already in memory
+# Load macro_base if not in memory (EDA may run standalone)
+if (!exists("macro_base") || !is.data.table(macro_base)) {
+  if (file.exists("Data/macro_base.rds")) {
+    macro_base <- readRDS("Data/macro_base.rds")
+    setDT(macro_base)
+    macro_base[, cal_date := as.Date(paste(year,
+                                            Q_MONTH[as.character(quarter)],
+                                            "01", sep="-"))]
+    msg("  Loaded macro_base.rds")
+  } else {
+    msg("  WARNING: macro_base.rds not found — skipping severe scenario charts")
+    macro_base  <- NULL
+    macro_severe <- NULL
+  }
+}
+
+# Load macro_severe
 if (!exists("macro_severe") || !is.data.table(macro_severe)) {
   if (file.exists("Data/macro_severe.rds")) {
     macro_severe <- readRDS("Data/macro_severe.rds")
@@ -838,7 +855,8 @@ if (!exists("macro_severe") || !is.data.table(macro_severe)) {
   }
 }
 
-if (!is.null(macro_severe) && nrow(macro_severe) > 0) {
+if (!is.null(macro_severe) && !is.null(macro_base) &&
+    nrow(macro_severe) > 0 && nrow(macro_base) > 0) {
 
   # ── Build unified macro comparison spine ──────────────────────────────────
   # Historical: use macro_base up to last observed quarter
