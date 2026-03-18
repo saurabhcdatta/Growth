@@ -412,6 +412,13 @@ merge_exposure <- function(pnl, exp_dt, state_col_hint) {
   stale <- intersect(exp_data_cols, names(pnl))
   if (length(stale)) pnl[, (stale) := NULL]
 
+  # Coerce join keys to matching types before merge
+  # state_code must be character on both sides; yyyyqq must be integer
+  pnl[, (sc)       := as.character(get(sc))]
+  exp_dt[, state_code := as.character(state_code)]
+  pnl[, yyyyqq     := as.integer(yyyyqq)]
+  exp_dt[, yyyyqq  := as.integer(yyyyqq)]
+
   # Merge: state × quarter
   out <- merge(pnl, exp_dt,
                by.x = c(sc, "yyyyqq"),
