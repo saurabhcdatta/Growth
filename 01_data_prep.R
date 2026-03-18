@@ -159,16 +159,24 @@ if (all(c("dep_shrcert","acct_018") %in% names(cr))) {
   msg("  ✓ cert_share (proportion 0-1, bounded)")
 }
 
-# loan_to_share = lns_tot / acct_018  (ratio, typically 0.4-0.9)
-if (all(c("lns_tot","acct_018") %in% names(cr))) {
+# loan_to_share = lns_tot / dep_tot
+# dep_tot is the preferred denominator (total shares & deposits)
+# In NCUA Form 5300: dep_tot = acct_018 (total shares & deposits)
+# Use dep_tot if present, otherwise fall back to acct_018
+dep_denom <- intersect(c("dep_tot", "acct_018"), names(cr))[1]
+
+if (!is.na(dep_denom) && "lns_tot" %in% names(cr)) {
+  msg("  Using denominator for loan_to_share: %s", dep_denom)
   cr[, loan_to_share := fifelse(
-    !is.na(acct_018) & is.finite(acct_018) & acct_018 > 0,
-    lns_tot / acct_018,
+    !is.na(get(dep_denom)) & is.finite(get(dep_denom)) & get(dep_denom) > 0,
+    lns_tot / get(dep_denom),
     NA_real_)]
-  # Cap extreme values: ratio above 2 or below 0 is data error
+  # Cap: ratio above 2 or below 0 is a data error
   cr[!is.na(loan_to_share),
      loan_to_share := pmin(pmax(loan_to_share, 0), 2)]
-  msg("  ✓ loan_to_share (ratio, bounded 0-2)")
+  msg("  ✓ loan_to_share = lns_tot / %s (bounded 0-2)", dep_denom)
+} else {
+  msg("  SKIP loan_to_share — lns_tot or deposit denominator not found")
 }
 
 # nim_spread = yldavgloans - costfds
