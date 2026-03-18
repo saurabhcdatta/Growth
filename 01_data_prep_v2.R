@@ -102,33 +102,28 @@ if (dups > 0) {
 setorderv(cr, c("join_number","year","quarter"))
 
 # Helper: winsorise a vector at p/1-p percentiles
-winsor <- function(x, p=0.01) {
-  lo <- quantile(x, p,   na.rm=TRUE)
-  hi <- quantile(x, 1-p, na.rm=TRUE)
+winsor <- function(x, p = 0.01) {
+  lo <- quantile(x, p,     na.rm = TRUE)
+  hi <- quantile(x, 1 - p, na.rm = TRUE)
   pmin(pmax(x, lo), hi)
 }
 
-# ── YoY growth rates (by CU, 4-quarter lag) ──────────────────────────────────
-# Guard: denominator must be > 0 and finite; winsorise at 1st/99th pctile
-yoy_growth <- function(dt, num_col, denom_col=NULL) {
-  # denom_col = num_col unless specified (standard: same variable lagged)
-  if (is.null(denom_col)) denom_col <- num_col
+# Helper: YoY growth by CU — pass full dt, specify column name as string
+# Returns a vector of length nrow(dt) aligned to dt row order
+cu_yoy <- function(dt, col) {
   dt[, {
-    x    <- get(num_col)
-    x_l4 <- shift(get(denom_col), 4)
-    raw  <- fifelse(!is.na(x) & !is.na(x_l4) &
-                      is.finite(x_l4) & x_l4 > 0,
-                    (x - x_l4) / x_l4 * 100,
-                    NA_real_)
-    raw
-  }, by = join_number]
+    x    <- get(col)
+    x_l4 <- shift(x, 4)
+    fifelse(
+      !is.na(x) & !is.na(x_l4) & is.finite(x_l4) & x_l4 > 0,
+      (x - x_l4) / x_l4 * 100,
+      NA_real_)
+  }, by = join_number][[2]]   # [[2]] extracts the computed vector (col 2 after by-group col)
 }
 
-# insured_share_growth
+# ── insured_share_growth ──────────────────────────────────────────────────────
 if ("insured_tot" %in% names(cr)) {
-  cr[, insured_share_growth := yoy_growth(.SD, "insured_tot"),
-     .SDcols = c("join_number","insured_tot")]
-  # Winsorise: cap at 1st/99th pctile to remove new-CU entry outliers
+  cr[, insured_share_growth := cu_yoy(cr, "insured_tot")]
   cr[!is.na(insured_share_growth),
      insured_share_growth := winsor(insured_share_growth)]
   msg("  ✓ insured_share_growth (YoY %%, winsorised 1-99)")
@@ -136,19 +131,17 @@ if ("insured_tot" %in% names(cr)) {
   msg("  SKIP insured_share_growth (insured_tot not found)")
 }
 
-# cert_growth_yoy
+# ── cert_growth_yoy ───────────────────────────────────────────────────────────
 if ("dep_shrcert" %in% names(cr)) {
-  cr[, cert_growth_yoy := yoy_growth(.SD, "dep_shrcert"),
-     .SDcols = c("join_number","dep_shrcert")]
+  cr[, cert_growth_yoy := cu_yoy(cr, "dep_shrcert")]
   cr[!is.na(cert_growth_yoy),
      cert_growth_yoy := winsor(cert_growth_yoy)]
   msg("  ✓ cert_growth_yoy (YoY %%, winsorised 1-99)")
 }
 
-# dep_growth_yoy
+# ── dep_growth_yoy ────────────────────────────────────────────────────────────
 if ("acct_018" %in% names(cr)) {
-  cr[, dep_growth_yoy := yoy_growth(.SD, "acct_018"),
-     .SDcols = c("join_number","acct_018")]
+  cr[, dep_growth_yoy := cu_yoy(cr, "acct_018")]
   cr[!is.na(dep_growth_yoy),
      dep_growth_yoy := winsor(dep_growth_yoy)]
   msg("  ✓ dep_growth_yoy (YoY %%, winsorised 1-99)")
