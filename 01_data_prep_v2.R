@@ -101,31 +101,91 @@ if (dups > 0) {
 # ── CU-level deposit constructs (computed here once, before merges) ───────────
 setorderv(cr, c("join_number","year","quarter"))
 
-derived_cu <- list(
-  insured_share_growth = quote(
-    (insured_tot - shift(insured_tot,4)) / shift(insured_tot,4) * 100),
-  cert_growth_yoy = quote(
-    (dep_shrcert - shift(dep_shrcert,4)) / shift(dep_shrcert,4) * 100),
-  dep_growth_yoy = quote(
-    (acct_018 - shift(acct_018,4)) / shift(acct_018,4) * 100),
-  cert_share    = quote(dep_shrcert / acct_018),
-  loan_to_share = quote(lns_tot / acct_018),
-  nim_spread    = quote(yldavgloans - costfds)
-)
+# Helper: winsorise a vector at p/1-p percentiles
+winsor <- function(x, p=0.01) {
+  lo <- quantile(x, p,   na.rm=TRUE)
+  hi <- quantile(x, 1-p, na.rm=TRUE)
+  pmin(pmax(x, lo), hi)
+}
 
-for (nm in names(derived_cu)) {
-  src_vars <- all.vars(derived_cu[[nm]])
-  if (all(src_vars %in% names(cr))) {
-    if (grepl("yoy|growth", nm)) {
-      cr[, (nm) := eval(derived_cu[[nm]]), by = join_number]
-    } else {
-      cr[, (nm) := eval(derived_cu[[nm]])]
-    }
-    msg("  ✓ %s constructed", nm)
-  } else {
-    msg("  SKIP %s (missing: %s)", nm,
-        paste(setdiff(src_vars, names(cr)), collapse=", "))
-  }
+# ── YoY growth rates (by CU, 4-quarter lag) ──────────────────────────────────
+# Guard: denominator must be > 0 and finite; winsorise at 1st/99th pctile
+yoy_growth <- function(dt, num_col, denom_col=NULL) {
+  # denom_col = num_col unless specified (standard: same variable lagged)
+  if (is.null(denom_col)) denom_col <- num_col
+  dt[, {
+    x    <- get(num_col)
+    x_l4 <- shift(get(denom_col), 4)
+    raw  <- fifelse(!is.na(x) & !is.na(x_l4) &
+                      is.finite(x_l4) & x_l4 > 0,
+                    (x - x_l4) / x_l4 * 100,
+                    NA_real_)
+    raw
+  }, by = join_number]
+}
+
+# insured_share_growth
+if ("insured_tot" %in% names(cr)) {
+  cr[, insured_share_growth := yoy_growth(.SD, "insured_tot"),
+     .SDcols = c("join_number","insured_tot")]
+  # Winsorise: cap at 1st/99th pctile to remove new-CU entry outliers
+  cr[!is.na(insured_share_growth),
+     insured_share_growth := winsor(insured_share_growth)]
+  msg("  ✓ insured_share_growth (YoY %%, winsorised 1-99)")
+} else {
+  msg("  SKIP insured_share_growth (insured_tot not found)")
+}
+
+# cert_growth_yoy
+if ("dep_shrcert" %in% names(cr)) {
+  cr[, cert_growth_yoy := yoy_growth(.SD, "dep_shrcert"),
+     .SDcols = c("join_number","dep_shrcert")]
+  cr[!is.na(cert_growth_yoy),
+     cert_growth_yoy := winsor(cert_growth_yoy)]
+  msg("  ✓ cert_growth_yoy (YoY %%, winsorised 1-99)")
+}
+
+# dep_growth_yoy
+if ("acct_018" %in% names(cr)) {
+  cr[, dep_growth_yoy := yoy_growth(.SD, "acct_018"),
+     .SDcols = c("join_number","acct_018")]
+  cr[!is.na(dep_growth_yoy),
+     dep_growth_yoy := winsor(dep_growth_yoy)]
+  msg("  ✓ dep_growth_yoy (YoY %%, winsorised 1-99)")
+}
+
+# ── Level ratios (no by-CU needed; guard denominator) ────────────────────────
+# cert_share = dep_shrcert / acct_018  (proportion 0-1)
+if (all(c("dep_shrcert","acct_018") %in% names(cr))) {
+  cr[, cert_share := fifelse(
+    !is.na(acct_018) & is.finite(acct_018) & acct_018 > 0,
+    dep_shrcert / acct_018,
+    NA_real_)]
+  # Logical bounds: cert share must be 0-1
+  cr[!is.na(cert_share), cert_share := pmin(pmax(cert_share, 0), 1)]
+  msg("  ✓ cert_share (proportion 0-1, bounded)")
+}
+
+# loan_to_share = lns_tot / acct_018  (ratio, typically 0.4-0.9)
+if (all(c("lns_tot","acct_018") %in% names(cr))) {
+  cr[, loan_to_share := fifelse(
+    !is.na(acct_018) & is.finite(acct_018) & acct_018 > 0,
+    lns_tot / acct_018,
+    NA_real_)]
+  # Cap extreme values: ratio above 2 or below 0 is data error
+  cr[!is.na(loan_to_share),
+     loan_to_share := pmin(pmax(loan_to_share, 0), 2)]
+  msg("  ✓ loan_to_share (ratio, bounded 0-2)")
+}
+
+# nim_spread = yldavgloans - costfds
+if (all(c("yldavgloans","costfds") %in% names(cr))) {
+  cr[, nim_spread := fifelse(
+    !is.na(yldavgloans) & !is.na(costfds) &
+    is.finite(yldavgloans) & is.finite(costfds),
+    yldavgloans - costfds,
+    NA_real_)]
+  msg("  ✓ nim_spread (yldavgloans - costfds)")
 }
 
 saveRDS(cr, "Data/call_clean.rds")
