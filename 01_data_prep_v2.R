@@ -397,75 +397,89 @@ msg("  panel_severe : %s rows × %s cols",
 # =============================================================================
 hdr("SECTION 6: Oil Exposure Merge")
 
+# ── helper: safely merge exposure onto one panel ─────────────────────────────
+merge_exposure <- function(pnl, exp_dt, state_col_hint) {
+
+  # Resolve the state column name for this specific panel
+  sc <- intersect(c(state_col_hint, "state_code", "state"), names(pnl))[1]
+  if (is.na(sc)) {
+    msg("  WARNING: no state column in panel — skipping exposure merge")
+    return(pnl)
+  }
+
+  # Drop pre-existing exposure cols to avoid .x / .y suffix duplicates
+  exp_data_cols <- setdiff(names(exp_dt), c("state_code", "yyyyqq"))
+  stale <- intersect(exp_data_cols, names(pnl))
+  if (length(stale)) pnl[, (stale) := NULL]
+
+  # Merge: state × quarter
+  out <- merge(pnl, exp_dt,
+               by.x = c(sc, "yyyyqq"),
+               by.y = c("state_code", "yyyyqq"),
+               all.x = TRUE)
+
+  # Fill NAs for unmatched jurisdictions (DC, PR, territories)
+  fill_zero <- c("oil_exposure_bin", "oil_exposure_cont",
+                 "oil_exposure_bin_1pct", "oil_exposure_bin_3pct",
+                 "spillover_exposure", "spillover_exposure_wtd")
+  for (col in intersect(fill_zero, names(out)))
+    out[is.na(get(col)), (col) := 0]
+
+  # Canonical binary alias
+  if ("oil_exposure_bin" %in% names(out))
+    out[, oil_exposure_idx := oil_exposure_bin]
+
+  return(out[])
+}
+
 if (file.exists("Data/oil_exposure.rds")) {
 
   exp_dt <- readRDS("Data/oil_exposure.rds")
   setDT(exp_dt)
 
-  exp_cols <- c("state_code","yyyyqq",
-                "mining_emp_share",
-                "oil_exposure_cont",
-                "oil_exposure_bin",
-                "oil_exposure_bin_1pct",
-                "oil_exposure_bin_3pct",
-                "oil_exposure_tier",
-                "oil_exposure_smooth",
-                "oil_bartik_iv",
-                "spillover_exposure",     # NEW: indirect channel
-                "spillover_exposure_wtd", # NEW: trade-weighted version
-                "cu_group")               # NEW: Direct / Indirect / Neither
+  exp_keep <- intersect(
+    c("state_code", "yyyyqq",
+      "mining_emp_share", "oil_exposure_cont",
+      "oil_exposure_bin", "oil_exposure_bin_1pct", "oil_exposure_bin_3pct",
+      "oil_exposure_tier", "oil_exposure_smooth", "oil_bartik_iv",
+      "spillover_exposure", "spillover_exposure_wtd", "cu_group"),
+    names(exp_dt))
+  exp_merge_dt <- exp_dt[, ..exp_keep]
 
-  exp_cols <- intersect(exp_cols, names(exp_dt))
-  exp_merge_dt <- exp_dt[, ..exp_cols]
+  # Each call returns a NEW data.table — assign back explicitly
+  cr           <- merge_exposure(cr,           exp_merge_dt, state_col)
+  panel_base   <- merge_exposure(panel_base,   exp_merge_dt, state_col)
+  panel_severe <- merge_exposure(panel_severe, exp_merge_dt, state_col)
 
-  for (pnl_obj in list(cr, panel_base, panel_severe)) {
-    sc <- if (!is.na(state_col)) state_col else "state_code"
-    if (sc %in% names(pnl_obj) && "yyyyqq" %in% names(pnl_obj)) {
-      # Remove any old exposure cols first
-      old <- intersect(exp_cols, names(pnl_obj))
-      if (length(old)) pnl_obj[, (old) := NULL]
-      # Merge
-      merge(pnl_obj, exp_merge_dt,
-            by.x = c(sc,"yyyyqq"), by.y = c("state_code","yyyyqq"),
-            all.x = TRUE)
-    }
+  msg("  \u2713 Oil exposure merged from oil_exposure.rds")
+  msg("  cr           : %s rows x %s cols",
+      format(nrow(cr), big.mark=","), ncol(cr))
+  msg("  panel_base   : %s rows x %s cols",
+      format(nrow(panel_base), big.mark=","), ncol(panel_base))
+  msg("  panel_severe : %s rows x %s cols",
+      format(nrow(panel_severe), big.mark=","), ncol(panel_severe))
+
+  if ("cu_group" %in% names(panel_base)) {
+    cat("  CU group distribution:\n")
+    print(panel_base[, .N, by = cu_group][order(cu_group)])
   }
-
-  # Re-assign (merge returns new DT; in-place update for each)
-  sc <- if (!is.na(state_col)) state_col else "state_code"
-  cr           <- merge(cr,           exp_merge_dt, by.x=c(sc,"yyyyqq"),
-                        by.y=c("state_code","yyyyqq"), all.x=TRUE)
-  panel_base   <- merge(panel_base,   exp_merge_dt, by.x=c(sc,"yyyyqq"),
-                        by.y=c("state_code","yyyyqq"), all.x=TRUE)
-  panel_severe <- merge(panel_severe, exp_merge_dt, by.x=c(sc,"yyyyqq"),
-                        by.y=c("state_code","yyyyqq"), all.x=TRUE)
-
-  # Fill unmatched territories
-  fill_cols <- c("oil_exposure_bin","oil_exposure_cont","oil_exposure_bin_1pct",
-                 "oil_exposure_bin_3pct","spillover_exposure","spillover_exposure_wtd")
-  for (pnl in list(cr, panel_base, panel_severe)) {
-    for (col in intersect(fill_cols, names(pnl)))
-      pnl[is.na(get(col)), (col) := 0]
-    if ("oil_exposure_bin" %in% names(pnl))
-      pnl[, oil_exposure_idx := oil_exposure_bin]
-  }
-
-  msg("  ✓ Oil exposure merged from oil_exposure.rds")
-  if ("cu_group" %in% names(panel_base))
-    print(panel_base[, .N, by=cu_group])
 
 } else {
   msg("  WARNING: Data/oil_exposure.rds not found")
   msg("  Run 01b_oil_exposure_v2.R first, then re-run this script")
-  # Provisional binary flag so rest of script runs
-  for (pnl in list(cr, panel_base, panel_severe)) {
-    if (!is.na(state_col) && state_col %in% names(pnl)) {
-      pnl[, oil_exposure_idx := as.integer(toupper(get(state_col)) %in% OIL_STATES)]
-      pnl[, cu_group := fcase(
-        oil_exposure_idx == 1L, "Direct",
-        default               = "Indirect"   # provisional — overwritten by 01b
-      )]
+
+  # Provisional flag so the rest of the script can run
+  sc <- intersect(c(state_col, "state_code", "state"), names(cr))[1]
+  if (!is.na(sc)) {
+    for (pnl_nm in c("cr", "panel_base", "panel_severe")) {
+      pnl <- get(pnl_nm)
+      pnl[, oil_exposure_idx  := as.integer(toupper(get(sc)) %in% OIL_STATES)]
+      pnl[, oil_exposure_cont := as.numeric(oil_exposure_idx)]
+      pnl[, spillover_exposure := 0]
+      pnl[, cu_group := fifelse(oil_exposure_idx == 1L, "Direct", "Indirect")]
+      assign(pnl_nm, pnl)
     }
+    msg("  Provisional oil_exposure_idx set from hard-coded state list")
   }
 }
 
