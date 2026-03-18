@@ -227,8 +227,8 @@ make_dual_axis <- function(outcome_var, outcome_label, y_fmt = waiver()) {
   if (!outcome_var %in% names(agg)) return(NULL)
 
   d <- agg[!is.na(get(outcome_var)) & !is.na(pbrent)]
-  oil_scale <- max(abs(d[[outcome_var]], na.rm=TRUE)) /
-               max(abs(d$pbrent),        na.rm=TRUE)
+  oil_scale <- max(abs(d[[outcome_var]]), na.rm=TRUE) /
+               max(abs(d$pbrent),         na.rm=TRUE)
 
   ggplot(d, aes(x = cal_date)) +
     ep_rects() +
