@@ -336,90 +336,109 @@ p03 <- ggplot(cc_results[!is.na(correlation)],
 save_plot(p03, "03_cross_correlation.png", w=11, h=6.5)
 
 # =============================================================================
-# CHART 04 — Direct vs Indirect: Oil-state vs Non-oil CU outcomes
+# CHART 04 — Direct vs Indirect: Oil-State vs Non-Oil CU outcomes
 # =============================================================================
 hdr("Chart 04: Direct vs indirect effect")
 
-if ("cu_group" %in% names(panel)) {
+# ── Step 1: Build a reliable 2-level grouping ─────────────────────────────────
+# Primary: oil_exposure_bin (1 = oil state, 0 = non-oil) — always available
+# This guarantees BOTH groups appear regardless of cu_group classification
+panel04 <- copy(panel)
 
-  # Diagnostic: show group distribution
-  grp_dist <- panel[, .N, by=cu_group][order(cu_group)]
-  cat("  cu_group distribution in panel:\n")
-  print(grp_dist)
+if ("oil_exposure_bin" %in% names(panel04)) {
+  panel04[, plot_group := fifelse(
+    !is.na(oil_exposure_bin) & oil_exposure_bin == 1L,
+    "Oil-State CUs (Direct)",
+    "Non-Oil CUs (Indirect/Spillover)"
+  )]
+  msg("  Using oil_exposure_bin for Chart 04 grouping")
+} else if ("cu_group" %in% names(panel04)) {
+  panel04[, plot_group := fcase(
+    cu_group == "Direct",    "Oil-State CUs (Direct)",
+    cu_group == "Indirect",  "Non-Oil CUs (Indirect/Spillover)",
+    default                = "Non-Oil CUs (Indirect/Spillover)"
+  )]
+  msg("  Using cu_group for Chart 04 grouping")
+} else {
+  msg("  WARNING: no grouping variable found for Chart 04")
+  panel04 <- NULL
+}
 
-  # If only one group or all NA — use oil_exposure_bin as fallback grouping
-  n_groups <- panel[!is.na(cu_group), uniqueN(cu_group)]
-  if (n_groups < 2) {
-    msg("  WARNING: cu_group has < 2 levels — using oil_exposure_bin as grouping")
-    if ("oil_exposure_bin" %in% names(panel)) {
-      panel[, cu_group := fifelse(oil_exposure_bin == 1L,
-                                   "Direct (oil-state)",
-                                   "Non-Oil State")]
+if (!is.null(panel04)) {
+  # Diagnostic
+  cat("  Chart 04 group distribution:
+")
+  print(panel04[, .N, by=plot_group][order(plot_group)])
+
+  GRP_COLS04 <- c("Oil-State CUs (Direct)"            = COL_DIRECT,
+                   "Non-Oil CUs (Indirect/Spillover)"  = COL_INDIR)
+  GRP_LT04   <- c("Oil-State CUs (Direct)"            = "solid",
+                   "Non-Oil CUs (Indirect/Spillover)"  = "solid")
+
+  # ── Step 2: Aggregate by group × quarter ───────────────────────────────────
+  agg_grp04 <- panel04[!is.na(plot_group),
+    c(list(cal_date = first(cal_date), year=first(year), quarter=first(quarter)),
+      lapply(.SD, function(x) mean(x, na.rm=TRUE))),
+    by = .(yyyyqq, plot_group),
+    .SDcols = intersect(cu_outcomes, names(panel04))
+  ][order(yyyyqq)]
+
+  # Add PBRENT for reference
+  agg_grp04 <- merge(agg_grp04,
+                      mac_spine[, .(yyyyqq, pbrent, yoy_oil)],
+                      by="yyyyqq", all.x=TRUE)
+
+  # ── Step 3: Plot function ───────────────────────────────────────────────────
+  make_grp04 <- function(v, lab, y_fmt=waiver()) {
+    if (!v %in% names(agg_grp04)) return(NULL)
+    d <- agg_grp04[!is.na(get(v)) & !is.na(plot_group)]
+    if (uniqueN(d$plot_group) < 2) {
+      msg("  NOTE: only 1 group for %s — both groups may overlap", v)
     }
-  }
+    if (nrow(d) == 0) return(NULL)
 
-  agg_grp <- agg_group(panel,
-                        intersect(cu_outcomes, names(panel)),
-                        "cu_group")
-  agg_grp <- merge(agg_grp,
-                   mac_spine[, .(yyyyqq, pbrent, yoy_oil)],
-                   by="yyyyqq", all.x=TRUE)
-
-  # Build colour map dynamically from available groups
-  all_grp_cols <- c("Direct"              = COL_DIRECT,
-                    "Direct (oil-state)"  = COL_DIRECT,
-                    "Indirect"            = COL_INDIR,
-                    "Non-Oil State"       = COL_INDIR,
-                    "Negligible"          = "#aaaaaa")
-  present_grps <- unique(agg_grp$cu_group)
-  grp_cols     <- all_grp_cols[names(all_grp_cols) %in% present_grps]
-
-  make_group_plot <- function(v, lab, y_fmt=waiver()) {
-    if (!v %in% names(agg_grp)) return(NULL)
-    plot_data <- agg_grp[!is.na(get(v)) &
-                           !is.na(cu_group) &
-                           !cu_group %in% c("Negligible")]
-    if (nrow(plot_data) == 0) return(NULL)
-    ggplot(plot_data, aes(x=cal_date, y=get(v), colour=cu_group)) +
+    ggplot(d, aes(x=cal_date, y=get(v),
+                   colour=plot_group, linetype=plot_group)) +
       ep_rects() +
-      geom_line(linewidth=0.8) +
-      scale_colour_manual(values=grp_cols, name="CU group") +
+      geom_line(linewidth=0.85) +
+      scale_colour_manual(values=GRP_COLS04, name=NULL,
+                           drop=FALSE) +
+      scale_linetype_manual(values=GRP_LT04, name=NULL,
+                             drop=FALSE) +
       scale_x_date(date_breaks="3 years", date_labels="%Y") +
       scale_y_continuous(labels=y_fmt) +
       labs(title=lab, x=NULL, y=lab) +
       theme_pub() +
-      theme(legend.position="bottom")
+      theme(legend.position="bottom",
+            legend.text=element_text(size=7.5))
   }
 
   p04_panels <- list(
-    make_group_plot("dq_rate",             "Delinquency Rate (%)"),
-    make_group_plot("netintmrg",           "Net Interest Margin (%)"),
-    make_group_plot("insured_share_growth","Insured Share Growth (YoY%)"),
-    make_group_plot("costfds",             "Cost of Funds (%)"),
-    make_group_plot("cert_share",          "Certificate Share",
-                    percent_format(scale=100)),
-    make_group_plot("loan_to_share",       "Loan-to-Share Ratio")
+    make_grp04("dq_rate",             "Delinquency Rate (%)"),
+    make_grp04("netintmrg",           "Net Interest Margin (%)"),
+    make_grp04("insured_share_growth","Insured Share Growth (YoY%)"),
+    make_grp04("costfds",             "Cost of Funds (%)"),
+    make_grp04("cert_share",          "Certificate Share",
+                percent_format(scale=100)),
+    make_grp04("loan_to_share",       "Loan-to-Share Ratio")
   )
   p04_panels <- Filter(Negate(is.null), p04_panels)
 
-  # Shared legend
-  leg_plot <- ggplot(data.frame(x=1, y=1,
-                                 g=c("Direct","Indirect","Negligible")),
-                      aes(x,y,colour=g)) +
-    geom_line() +
-    scale_colour_manual(values=grp_cols, name="CU Group") +
-    theme_pub() + theme(legend.position="bottom")
-  shared_leg <- cowplot::get_legend(leg_plot)
+  if (length(p04_panels) >= 2) {
+    p04 <- wrap_plots(p04_panels, ncol=2,
+                       guides="collect") &
+      theme(legend.position="bottom")
 
-  p04 <- wrap_plots(p04_panels, ncol=2) +
-    plot_annotation(
-      title    = "FIGURE 04 — Direct vs Indirect Effect: Oil-State vs Non-Oil CUs",
-      subtitle = "Direct = state mining emp share >= 2%  |  Indirect = non-oil CUs with spillover linkage",
-      caption  = "Source: NCUA Form 5300; BLS QCEW oil exposure classification",
-      theme    = theme(plot.title    = element_text(face="bold", size=12),
-                       plot.subtitle = element_text(size=9, colour="#555"))
-    )
-  save_plot(p04, "04_direct_vs_indirect.png", w=13, h=10)
+    p04 <- p04 +
+      plot_annotation(
+        title    = "FIGURE 04 — Direct vs Indirect: Oil-State vs Non-Oil CUs (2005–2025)",
+        subtitle = "Oil-State = mining emp share ≥ 2% (BLS QCEW)  |  Non-Oil = remaining CUs",
+        caption  = "Source: NCUA Form 5300 Call Report; BLS QCEW oil exposure classification",
+        theme    = theme(plot.title    = element_text(face="bold", size=12),
+                         plot.subtitle = element_text(size=9, colour="#555"))
+      )
+    save_plot(p04, "04_direct_vs_indirect.png", w=13, h=10)
+  }
 }
 
 # =============================================================================
