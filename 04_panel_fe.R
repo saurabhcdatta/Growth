@@ -464,9 +464,16 @@ for (i in 1:nrow(key_results)) {
 hdr("SECTION 7: Visualisation")
 
 # ── Chart 04a-01: Coefficient plot — M2 oil terms across dep vars ────────────
+# Use M2 for full sample; M_pre/M_post for era comparison
+# Fallback: if M_pre empty use all available subsample model names
+avail_sub_models <- unique(coef_tbl[grepl("M_pre|M_post|pre|post",model), model])
+msg("  Available subsample models in coef_tbl: %s",
+    paste(avail_sub_models, collapse=", "))
+
 plot_data <- coef_tbl[
-  model %in% c("M2","M_pre","M_post") &
-  term %in% c(OIL_YOY, OIL_X_DIRECT, OIL_X_SPILL) &
+  model %in% c("M2", avail_sub_models) &
+  (term %in% c(OIL_YOY, OIL_X_DIRECT, OIL_X_SPILL) |
+   grepl("yoy_oil", term)) &
   dep_var %in% main_dvars &
   !is.na(estimate)
 ]
@@ -484,7 +491,13 @@ plot_data[, ci_lo := estimate - 1.96 * std_error]
 plot_data[, ci_hi := estimate + 1.96 * std_error]
 
 model_labels <- c("M2"="Full Sample","M_pre"="Pre-Shale","M_post"="Post-Shale")
+# Add any variant names that may exist
+for (nm in unique(plot_data$model)) {
+  if (!nm %in% names(model_labels))
+    model_labels[nm] <- nm
+}
 plot_data[, model_label := model_labels[model]]
+plot_data[is.na(model_label), model_label := model]
 
 COL_COLS <- c("Full Sample" ="#1a3a5c",
                "Pre-Shale"   ="#2d7a4a",
@@ -554,11 +567,36 @@ p_decomp <- ggplot(decomp_data[!is.na(dep_label)],
 save_plot(p_decomp, "04a_02_direct_indirect_decomp.png", w=14, h=9)
 
 # ── Chart 04a-03: Structural break — pre vs post shale ────────────────────────
+
+# Diagnostic: check what's in coef_tbl for subsample models
+msg("  coef_tbl model values: %s",
+    paste(unique(coef_tbl$model), collapse=", "))
+msg("  coef_tbl M_pre rows: %d | M_post rows: %d",
+    coef_tbl[model=="M_pre", .N],
+    coef_tbl[model=="M_post", .N])
+
 break_data <- coef_tbl[
   model %in% c("M_pre","M_post") &
   term == OIL_YOY &
-  !is.na(estimate)
+  !is.na(estimate) & !is.na(std_error)
 ]
+
+# If empty — subsample coefs stored under different term name, try all oil terms
+if (nrow(break_data) == 0) {
+  msg("  WARNING: M_pre/M_post rows empty for OIL_YOY — trying all terms")
+  msg("  Available terms in M_pre: %s",
+      paste(coef_tbl[model=="M_pre", unique(term)], collapse=", "))
+  break_data <- coef_tbl[
+    model %in% c("M_pre","M_post") &
+    grepl("yoy_oil|pbrent", term, ignore.case=TRUE) &
+    !is.na(estimate)
+  ]
+}
+
+if (nrow(break_data) == 0) {
+  msg("  WARNING: No pre/post shale data for structural break chart — skipping 04a-03")
+} else {
+
 break_data[, dep_label := dep_labels[dep_var]]
 break_data[is.na(dep_label), dep_label := dep_var]
 break_data[, era := fifelse(model=="M_pre",
@@ -589,6 +627,7 @@ p_break <- ggplot(break_data[!is.na(dep_label)],
        x="PBRENT YoY Coefficient", y=NULL) +
   theme_pub()
 save_plot(p_break, "04a_03_structural_break_coefs.png", w=11, h=7)
+} # end if nrow(break_data) > 0
 
 # ── Chart 04a-04: FOMC regime interaction ─────────────────────────────────────
 fomc_data <- coef_tbl[
@@ -633,21 +672,9 @@ if (nrow(fomc_data) > 0) {
 }
 
 # ── Chart 04a-05: Model progression — R² within ───────────────────────────────
-r2_data <- rbindlist(lapply(dep_vars, function(v) {
-  mods <- all_models[[v]]
-  if (is.null(mods)) return(NULL)
-  rbindlist(lapply(c("M1","M2","M3","M4","M5","M6"), function(m) {
-    if (is.null(mods[[m]])) return(NULL)
-    data.table(
-      dep_var    = v,
-      model      = m,
-      r2_within  = tryCatch(r2(mods[[m]],type="within"), error=function(e) NA),
-      n_obs      = tryCatch(nobs(mods[[m]]), error=function(e) NA)
-    )
-  }))
-}))
+# r2_data was built inside the model loop above
 
-if (nrow(r2_data[!is.na(r2_within)]) > 0) {
+if (exists("r2_data") && nrow(r2_data[!is.na(r2_within)]) > 0) {
   r2_data[, dep_label := dep_labels[dep_var]]
   r2_data[is.na(dep_label), dep_label := dep_var]
 
