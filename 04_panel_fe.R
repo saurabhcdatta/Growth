@@ -204,11 +204,11 @@ extract_coefs <- function(fit, model_name, dep_var) {
   if (is.null(ct)) return(NULL)
   dt <- as.data.table(ct, keep.rownames="term")
   setnames(dt, c("term","estimate","std_error","t_stat","p_value"))
-  # fixest::r2() returns a *named* numeric vector e.g. c("Within R2"=0.12).
-  # Coerce to plain unnamed scalar so data.table stores it as a numeric column,
-  # not a list-column, which would break is.na() checks downstream.
+  # fixest::r2() type strings: "wr2" = within R², "war2" = adj. within R²
+  # NOTE: type="within" is INVALID in fixest and silently returns NA.
+  # Also coerce to plain scalar — r2() returns a named numeric vector.
   r2_val <- tryCatch(
-    as.numeric(r2(fit, type="within"))[[1L]],
+    as.numeric(r2(fit, "wr2"))[[1L]],
     error=function(e) NA_real_
   )
   dt[, `:=`(model    = model_name,
@@ -357,8 +357,9 @@ for (v in dep_vars) {
   # Extract R²
   v_r2 <- rbindlist(lapply(c("M1","M2","M3","M4","M5","M6"), function(m) {
     if (is.null(mods[[m]])) return(NULL)
-    # fixest::r2() returns named numeric — take first element as plain scalar
-    r2_val <- tryCatch(as.numeric(r2(mods[[m]], type="within"))[[1L]],
+    # "wr2" = within R² in fixest. type="within" is invalid → always NA.
+    # [[1L]] strips the name from the returned named numeric vector.
+    r2_val <- tryCatch(as.numeric(r2(mods[[m]], "wr2"))[[1L]],
                        error=function(e) NA_real_)
     data.table(dep_var   = v,
                model     = m,
@@ -667,63 +668,56 @@ save_plot(p_break, "04a_03_structural_break_coefs.png", w=11, h=7)
 } # end if nrow(break_data) > 0
 
 # ── Chart 04a-04: FOMC regime interaction ─────────────────────────────────────
-# OIL_X_FOMC = "fomc_x_brent" is a pre-computed column (fomc_regime × yoy_oil).
-# If it survived collinearity checks it will appear in M3 coef_tbl under that
-# exact name. However if feols dropped or renamed it, we detect it dynamically.
+# OIL_X_FOMC = "fomc_x_brent" (fomc_regime × yoy_oil, pre-computed in panel).
+# Diagnostic: show all M3 terms so we know exactly what fixest stored.
+m3_terms_all <- unique(coef_tbl[model %in% c("M3","M4","M5"), term])
+msg("  04a-04 DIAG — terms in M3/M4/M5: %s",
+    paste(m3_terms_all, collapse=", "))
 
+# Resolve the actual FOMC interaction term name
 fomc_term_actual <- {
-  # 1. preferred: OIL_X_FOMC as specified
-  if (OIL_X_FOMC %in% coef_tbl[model %in% c("M3","M4","M5"), term]) {
-    OIL_X_FOMC
+  if (OIL_X_FOMC %in% m3_terms_all) {
+    OIL_X_FOMC                                         # exact match
   } else {
-    # 2. fallback: any term in M3/M4/M5 containing "fomc" (case-insensitive)
-    detected <- coef_tbl[model %in% c("M3","M4","M5"),
-                          unique(term)[grepl("fomc", unique(term),
-                                            ignore.case=TRUE)]]
-    if (length(detected) > 0) detected[[1L]] else NULL
+    # fixest may label pre-computed interactions by column name or
+    # by "var1:var2" notation — scan for anything containing "fomc"
+    hits <- m3_terms_all[grepl("fomc", m3_terms_all, ignore.case=TRUE)]
+    if (length(hits) > 0) hits[[1L]] else NULL
   }
 }
-
-msg("  04a-04: FOMC interaction term resolved to: '%s'",
-    fomc_term_actual %||% "<not found>")
+msg("  04a-04: FOMC term resolved to: '%s'",
+    fomc_term_actual %||% "<NOT FOUND — chart will be skipped>")
 
 fomc_data <- if (!is.null(fomc_term_actual)) {
-  coef_tbl[
-    model %in% c("M3","M4","M5") &
-    term  %in% c(OIL_X_DIRECT, fomc_term_actual) &
-    dep_var %in% main_dvars &
-    !is.na(estimate)
-  ]
-} else {
-  data.table()
-}
+  coef_tbl[model %in% c("M3","M4","M5") &
+           term  %in% c(OIL_X_DIRECT, fomc_term_actual) &
+           dep_var %in% main_dvars & !is.na(estimate)]
+} else { data.table() }
 
-# If still empty after fallback, try ALL models for that term
+# Widen to all models if M3/M4/M5 still returned nothing
 if (nrow(fomc_data) == 0 && !is.null(fomc_term_actual)) {
-  msg("  04a-04: M3/M4/M5 empty — widening to all models")
-  fomc_data <- coef_tbl[
-    term %in% c(OIL_X_DIRECT, fomc_term_actual) &
-    dep_var %in% main_dvars & !is.na(estimate)
-  ]
+  msg("  04a-04: M3/M4/M5 empty — widening search to all models")
+  fomc_data <- coef_tbl[term %in% c(OIL_X_DIRECT, fomc_term_actual) &
+                         dep_var %in% main_dvars & !is.na(estimate)]
 }
 
-# Keep one row per dep_var × term (best model: prefer M3 > M4 > M5 > any)
 if (nrow(fomc_data) > 0) {
-  model_pref  <- c("M3","M4","M5","M2","M1","M6")
+  # One row per dep_var × term: prefer M3 > M4 > M5 > M2 > M1 > M6
+  model_pref <- c("M3","M4","M5","M2","M1","M6")
   fomc_data[, model_rank := match(model, model_pref)]
   fomc_data[is.na(model_rank), model_rank := 99L]
-  fomc_data   <- fomc_data[, .SD[which.min(model_rank)], by=.(dep_var, term)]
+  fomc_data <- fomc_data[, .SD[which.min(model_rank)], by=.(dep_var, term)]
 
   fomc_data[, dep_label  := dep_labels[dep_var]]
   fomc_data[is.na(dep_label), dep_label := dep_var]
   fomc_data[, term_label := fcase(
-    term == OIL_X_DIRECT,   "PBRENT × Oil-State Exposure\n(β₂ direct channel)",
-    term == fomc_term_actual,"PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)",
+    term == OIL_X_DIRECT,    "PBRENT × Oil-State Exposure\n(β₂ direct channel)",
+    term == fomc_term_actual, "PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)",
     default = term
   )]
-  fomc_data[, ci_lo := estimate - 1.96 * std_error]
-  fomc_data[, ci_hi := estimate + 1.96 * std_error]
-  fomc_data[, sig_alpha := fifelse(p_value < 0.05, 1.0, 0.4)]
+  fomc_data[, ci_lo      := estimate - 1.96 * std_error]
+  fomc_data[, ci_hi      := estimate + 1.96 * std_error]
+  fomc_data[, sig_alpha  := fifelse(p_value < 0.05, 1.0, 0.4)]
 
   p_fomc <- ggplot(fomc_data,
                    aes(x=estimate, y=dep_label,
@@ -735,11 +729,11 @@ if (nrow(fomc_data) > 0) {
                    position=position_dodge(0.5)) +
     geom_point(size=3.5, position=position_dodge(0.5)) +
     scale_colour_manual(
-      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"        = "#1a3a5c",
+      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"             = "#1a3a5c",
                "PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)" = "#b5470a"),
       name=NULL) +
     scale_shape_manual(
-      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"        = 16,
+      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"             = 16,
                "PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)" = 17),
       name=NULL) +
     scale_alpha_identity() +
@@ -751,42 +745,42 @@ if (nrow(fomc_data) > 0) {
     theme_pub()
   save_plot(p_fomc, "04a_04_fomc_interaction.png", w=11, h=6)
 } else {
-  msg("  04a-04: fomc_data still empty — writing diagnostic and skipping chart")
+  msg("  04a-04: fomc_data empty — writing full M3/M4/M5 coef diagnostic")
   fwrite(coef_tbl[model %in% c("M3","M4","M5")],
          "Tables/diag_04a04_m3_coefs.csv")
-  msg("  Diagnostic CSV: Tables/diag_04a04_m3_coefs.csv")
+  msg("  See: Tables/diag_04a04_m3_coefs.csv — check 'term' column for FOMC term name")
 }
 
 # ── Chart 04a-05: Model progression — R² within ───────────────────────────────
-# r2_data was built inside the model loop above.
-# Guard: coerce r2_within to plain numeric in case any list-column crept in.
+# r2_data was built inside the model loop.
+# r2_within is now populated via r2(fit, "wr2") — the correct fixest type string.
 
 if (exists("r2_data") && nrow(r2_data) > 0) {
 
-  # Defensive coercion — handles named numeric, list, or plain numeric
+  # Defensive coerce — handles any residual list-column or named-numeric edge case
   if (is.list(r2_data$r2_within)) {
     r2_data[, r2_within := as.numeric(vapply(r2_within,
-                              function(x) if (length(x)==0) NA_real_
-                                           else as.numeric(x)[[1L]],
-                              numeric(1)))]
+                             function(x) if (length(x) == 0) NA_real_
+                                          else as.numeric(x)[[1L]],
+                             numeric(1)))]
   } else {
     r2_data[, r2_within := as.numeric(r2_within)]
   }
 
   r2_plot <- r2_data[!is.na(r2_within) & dep_var %in% main_dvars]
-  msg("  04a-05: r2_plot rows = %d", nrow(r2_plot))
+  msg("  04a-05: r2_plot rows = %d (non-NA within-R² obs)", nrow(r2_plot))
 
   if (nrow(r2_plot) > 0) {
 
     r2_plot[, dep_label := dep_labels[dep_var]]
     r2_plot[is.na(dep_label), dep_label := dep_var]
 
-    # Correct x-axis ordering M1 → M6
+    # Enforce correct M1→M6 ordering on x-axis (not alphabetical)
     model_order <- c("M1","M2","M3","M4","M5","M6")
     r2_plot[, model := factor(model, levels=model_order)]
-    r2_plot <- r2_plot[!is.na(model)]  # drop any non-M1–M6 rows
+    r2_plot <- r2_plot[!is.na(model)]
 
-    # Spec annotations for x-axis
+    # Multi-line x-axis labels describing each spec
     spec_labels <- c(
       M1 = "M1\nOil only",
       M2 = "M2\n+Direct/\nIndirect",
@@ -813,19 +807,19 @@ if (exists("r2_data") && nrow(r2_data) > 0) {
                         expand=expansion(add=c(0.3, 1.5))) +
       labs(title    = "FIGURE 04a-05 — Within R² by Model Specification",
            subtitle = "How much explanatory power each additional oil channel adds | After absorbing CU FE + Quarter FE",
-           caption  = "Within R² (excludes variance explained by fixed effects)",
+           caption  = "Within R² (excludes variance explained by fixed effects) | fixest::r2(fit, 'wr2')",
            x="Model specification", y="Within R²") +
       theme_pub() +
-      theme(axis.text.x      = element_text(size=8, lineheight=1.2),
+      theme(axis.text.x        = element_text(size=8, lineheight=1.2),
             panel.grid.major.x = element_blank())
     save_plot(p_r2, "04a_05_r2_progression.png", w=11, h=6)
 
   } else {
-    msg("  04a-05: r2_plot is empty after NA filter — skipping chart")
-    msg("          r2_data summary: %d rows, r2_within range [%.4f, %.4f]",
-        nrow(r2_data),
-        min(r2_data$r2_within, na.rm=TRUE),
-        max(r2_data$r2_within, na.rm=TRUE))
+    msg("  04a-05: r2_plot empty after NA filter — all r2_within are NA")
+    msg("          This means r2(fit, 'wr2') failed for all models.")
+    msg("          Try r2(fit) with no type arg and check names(r2(fit)).")
+    fwrite(r2_data, "Tables/diag_04a05_r2_data.csv")
+    msg("          Diagnostic: Tables/diag_04a05_r2_data.csv")
   }
 
 } else {
