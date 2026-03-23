@@ -204,10 +204,17 @@ extract_coefs <- function(fit, model_name, dep_var) {
   if (is.null(ct)) return(NULL)
   dt <- as.data.table(ct, keep.rownames="term")
   setnames(dt, c("term","estimate","std_error","t_stat","p_value"))
+  # fixest::r2() returns a *named* numeric vector e.g. c("Within R2"=0.12).
+  # Coerce to plain unnamed scalar so data.table stores it as a numeric column,
+  # not a list-column, which would break is.na() checks downstream.
+  r2_val <- tryCatch(
+    as.numeric(r2(fit, type="within"))[[1L]],
+    error=function(e) NA_real_
+  )
   dt[, `:=`(model    = model_name,
              dep_var  = dep_var,
              n_obs    = tryCatch(nobs(fit), error=function(e) NA_integer_),
-             r2_within= tryCatch(r2(fit,type="within"), error=function(e) NA_real_))]
+             r2_within= r2_val)]
   dt
 }
 
@@ -350,8 +357,12 @@ for (v in dep_vars) {
   # Extract R²
   v_r2 <- rbindlist(lapply(c("M1","M2","M3","M4","M5","M6"), function(m) {
     if (is.null(mods[[m]])) return(NULL)
-    data.table(dep_var=v, model=m,
-               r2_within = tryCatch(r2(mods[[m]],type="within"), error=function(e) NA_real_),
+    # fixest::r2() returns named numeric — take first element as plain scalar
+    r2_val <- tryCatch(as.numeric(r2(mods[[m]], type="within"))[[1L]],
+                       error=function(e) NA_real_)
+    data.table(dep_var   = v,
+               model     = m,
+               r2_within = r2_val,
                n_obs     = tryCatch(nobs(mods[[m]]), error=function(e) NA_integer_))
   }), fill=TRUE)
   all_r2[[v]] <- v_r2
@@ -656,67 +667,169 @@ save_plot(p_break, "04a_03_structural_break_coefs.png", w=11, h=7)
 } # end if nrow(break_data) > 0
 
 # ── Chart 04a-04: FOMC regime interaction ─────────────────────────────────────
-fomc_data <- coef_tbl[
-  model == "M3" &
-  term %in% c(OIL_YOY, OIL_X_FOMC) &
-  dep_var %in% main_dvars &
-  !is.na(estimate)
-]
-fomc_data[, dep_label := dep_labels[dep_var]]
-fomc_data[is.na(dep_label), dep_label := dep_var]
-fomc_data[, term_label := fifelse(
-  term == OIL_YOY,
-  "PBRENT YoY\n(FOMC hold baseline)",
-  "PBRENT × FOMC Regime\n(hiking=+1, cutting=-1)"
-)]
-fomc_data[, ci_lo := estimate - 1.96*std_error]
-fomc_data[, ci_hi := estimate + 1.96*std_error]
+# OIL_X_FOMC = "fomc_x_brent" is a pre-computed column (fomc_regime × yoy_oil).
+# If it survived collinearity checks it will appear in M3 coef_tbl under that
+# exact name. However if feols dropped or renamed it, we detect it dynamically.
 
+fomc_term_actual <- {
+  # 1. preferred: OIL_X_FOMC as specified
+  if (OIL_X_FOMC %in% coef_tbl[model %in% c("M3","M4","M5"), term]) {
+    OIL_X_FOMC
+  } else {
+    # 2. fallback: any term in M3/M4/M5 containing "fomc" (case-insensitive)
+    detected <- coef_tbl[model %in% c("M3","M4","M5"),
+                          unique(term)[grepl("fomc", unique(term),
+                                            ignore.case=TRUE)]]
+    if (length(detected) > 0) detected[[1L]] else NULL
+  }
+}
+
+msg("  04a-04: FOMC interaction term resolved to: '%s'",
+    fomc_term_actual %||% "<not found>")
+
+fomc_data <- if (!is.null(fomc_term_actual)) {
+  coef_tbl[
+    model %in% c("M3","M4","M5") &
+    term  %in% c(OIL_X_DIRECT, fomc_term_actual) &
+    dep_var %in% main_dvars &
+    !is.na(estimate)
+  ]
+} else {
+  data.table()
+}
+
+# If still empty after fallback, try ALL models for that term
+if (nrow(fomc_data) == 0 && !is.null(fomc_term_actual)) {
+  msg("  04a-04: M3/M4/M5 empty — widening to all models")
+  fomc_data <- coef_tbl[
+    term %in% c(OIL_X_DIRECT, fomc_term_actual) &
+    dep_var %in% main_dvars & !is.na(estimate)
+  ]
+}
+
+# Keep one row per dep_var × term (best model: prefer M3 > M4 > M5 > any)
 if (nrow(fomc_data) > 0) {
+  model_pref  <- c("M3","M4","M5","M2","M1","M6")
+  fomc_data[, model_rank := match(model, model_pref)]
+  fomc_data[is.na(model_rank), model_rank := 99L]
+  fomc_data   <- fomc_data[, .SD[which.min(model_rank)], by=.(dep_var, term)]
+
+  fomc_data[, dep_label  := dep_labels[dep_var]]
+  fomc_data[is.na(dep_label), dep_label := dep_var]
+  fomc_data[, term_label := fcase(
+    term == OIL_X_DIRECT,   "PBRENT × Oil-State Exposure\n(β₂ direct channel)",
+    term == fomc_term_actual,"PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)",
+    default = term
+  )]
+  fomc_data[, ci_lo := estimate - 1.96 * std_error]
+  fomc_data[, ci_hi := estimate + 1.96 * std_error]
+  fomc_data[, sig_alpha := fifelse(p_value < 0.05, 1.0, 0.4)]
+
   p_fomc <- ggplot(fomc_data,
                    aes(x=estimate, y=dep_label,
-                       colour=term_label, shape=term_label)) +
+                       colour=term_label, shape=term_label,
+                       alpha=sig_alpha)) +
     geom_vline(xintercept=0, linewidth=0.4, colour="#888") +
     geom_errorbarh(aes(xmin=ci_lo, xmax=ci_hi),
                    height=0.25, linewidth=0.7,
                    position=position_dodge(0.5)) +
     geom_point(size=3.5, position=position_dodge(0.5)) +
     scale_colour_manual(
-      values=c("PBRENT YoY\n(FOMC hold baseline)"        = "#1a3a5c",
-               "PBRENT × FOMC Regime\n(hiking=+1, cutting=-1)" = "#b5470a"),
+      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"        = "#1a3a5c",
+               "PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)" = "#b5470a"),
       name=NULL) +
     scale_shape_manual(
-      values=c("PBRENT YoY\n(FOMC hold baseline)"        = 16,
-               "PBRENT × FOMC Regime\n(hiking=+1, cutting=-1)" = 17),
+      values=c("PBRENT × Oil-State Exposure\n(β₂ direct channel)"        = 16,
+               "PBRENT × FOMC Regime\n(β₄ rate channel: hiking=+1, cutting=-1)" = 17),
       name=NULL) +
+    scale_alpha_identity() +
+    scale_x_continuous(expand=expansion(mult=c(0.05, 0.05))) +
     labs(title    = "FIGURE 04a-04 — FOMC Regime × Oil Shock Interaction (Model M3)",
          subtitle = "Tests: does oil shock effect differ when Fed is hiking vs cutting vs holding?",
          caption  = "CU FE + Quarter FE | Clustered SE | Key finding: rate channel only active post-ZIRP",
-         x="Coefficient", y=NULL) +
+         x="Coefficient (with 95% CI)", y=NULL) +
     theme_pub()
   save_plot(p_fomc, "04a_04_fomc_interaction.png", w=11, h=6)
+} else {
+  msg("  04a-04: fomc_data still empty — writing diagnostic and skipping chart")
+  fwrite(coef_tbl[model %in% c("M3","M4","M5")],
+         "Tables/diag_04a04_m3_coefs.csv")
+  msg("  Diagnostic CSV: Tables/diag_04a04_m3_coefs.csv")
 }
 
 # ── Chart 04a-05: Model progression — R² within ───────────────────────────────
-# r2_data was built inside the model loop above
+# r2_data was built inside the model loop above.
+# Guard: coerce r2_within to plain numeric in case any list-column crept in.
 
-if (exists("r2_data") && nrow(r2_data[!is.na(r2_within)]) > 0) {
-  r2_data[, dep_label := dep_labels[dep_var]]
-  r2_data[is.na(dep_label), dep_label := dep_var]
+if (exists("r2_data") && nrow(r2_data) > 0) {
 
-  p_r2 <- ggplot(r2_data[!is.na(r2_within) & dep_var %in% main_dvars],
-                 aes(x=model, y=r2_within, colour=dep_label,
-                     group=dep_label)) +
-    geom_line(linewidth=0.8) +
-    geom_point(size=2.5) +
-    scale_colour_brewer(palette="Dark2", name="Dep Variable") +
-    scale_y_continuous(labels=percent_format(accuracy=0.1)) +
-    labs(title    = "FIGURE 04a-05 — Within R² by Model Specification",
-         subtitle = "M1=baseline | M2=direct+indirect | M3=+FOMC | M4=+post_shale | M5=full | M6=clean sample",
-         caption  = "Within R² after absorbing CU FE + Quarter FE",
-         x="Model", y="Within R²") +
-    theme_pub()
-  save_plot(p_r2, "04a_05_r2_progression.png", w=10, h=6)
+  # Defensive coercion — handles named numeric, list, or plain numeric
+  if (is.list(r2_data$r2_within)) {
+    r2_data[, r2_within := as.numeric(vapply(r2_within,
+                              function(x) if (length(x)==0) NA_real_
+                                           else as.numeric(x)[[1L]],
+                              numeric(1)))]
+  } else {
+    r2_data[, r2_within := as.numeric(r2_within)]
+  }
+
+  r2_plot <- r2_data[!is.na(r2_within) & dep_var %in% main_dvars]
+  msg("  04a-05: r2_plot rows = %d", nrow(r2_plot))
+
+  if (nrow(r2_plot) > 0) {
+
+    r2_plot[, dep_label := dep_labels[dep_var]]
+    r2_plot[is.na(dep_label), dep_label := dep_var]
+
+    # Correct x-axis ordering M1 → M6
+    model_order <- c("M1","M2","M3","M4","M5","M6")
+    r2_plot[, model := factor(model, levels=model_order)]
+    r2_plot <- r2_plot[!is.na(model)]  # drop any non-M1–M6 rows
+
+    # Spec annotations for x-axis
+    spec_labels <- c(
+      M1 = "M1\nOil only",
+      M2 = "M2\n+Direct/\nIndirect",
+      M3 = "M3\n+FOMC\n×Oil",
+      M4 = "M4\n+Post\nShale",
+      M5 = "M5\nFull",
+      M6 = "M6\nClean\nSample"
+    )
+
+    # End-point labels (rightmost non-NA model per dep_var)
+    r2_end <- r2_plot[, .SD[which.max(as.integer(model))], by=dep_var]
+
+    p_r2 <- ggplot(r2_plot,
+                   aes(x=model, y=r2_within,
+                       colour=dep_label, group=dep_label)) +
+      geom_line(linewidth=0.85, alpha=0.9) +
+      geom_point(size=2.8) +
+      geom_text(data=r2_end, aes(label=dep_label),
+                hjust=-0.15, size=3, fontface="bold") +
+      scale_colour_brewer(palette="Dark2", guide="none") +
+      scale_y_continuous(labels=percent_format(accuracy=0.1),
+                         expand=expansion(mult=c(0.02, 0.08))) +
+      scale_x_discrete(labels=spec_labels,
+                        expand=expansion(add=c(0.3, 1.5))) +
+      labs(title    = "FIGURE 04a-05 — Within R² by Model Specification",
+           subtitle = "How much explanatory power each additional oil channel adds | After absorbing CU FE + Quarter FE",
+           caption  = "Within R² (excludes variance explained by fixed effects)",
+           x="Model specification", y="Within R²") +
+      theme_pub() +
+      theme(axis.text.x      = element_text(size=8, lineheight=1.2),
+            panel.grid.major.x = element_blank())
+    save_plot(p_r2, "04a_05_r2_progression.png", w=11, h=6)
+
+  } else {
+    msg("  04a-05: r2_plot is empty after NA filter — skipping chart")
+    msg("          r2_data summary: %d rows, r2_within range [%.4f, %.4f]",
+        nrow(r2_data),
+        min(r2_data$r2_within, na.rm=TRUE),
+        max(r2_data$r2_within, na.rm=TRUE))
+  }
+
+} else {
+  msg("  04a-05: r2_data not found or empty — skipping chart")
 }
 
 # =============================================================================
