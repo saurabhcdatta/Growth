@@ -69,6 +69,8 @@ msg("  After %dQ1 filter: %s rows | %s unique CUs | %s quarters",
     uniqueN(cr$yyyyqq))
 
 # ── Direct-ratio variables (no normalization needed) ──────────────────────────
+# Confirmed from call report column list:
+# netintmrg, networth, networthalt, pcanetworth, costfds, roa all present
 direct_ok <- intersect(c("netintmrg","networth","networthalt",
                           "pcanetworth","costfds","roa"), names(cr))
 msg("  Direct ratios confirmed: %s", paste(direct_ok, collapse=", "))

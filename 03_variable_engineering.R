@@ -178,6 +178,46 @@ hdr("SECTION 3: Additional CU-Level Variables")
 
 setorderv(panel, c("join_number","year","quarter"))
 
+# ── 3.0  Resolve charge-off column name ──────────────────────────────────────
+# chg_tot_lns_ratio may be named differently in the call report
+# Common alternatives: chg_off_ratio, net_chargeoffs, acct_XXX derived
+chargeoff_col <- intersect(
+  c("chg_totlns_ratio",    # primary — confirmed in call report
+    "chg_tot_lns_ratio",   # alt spelling
+    "chg_tot_ratio",       # seen in call report
+    "netchgoffs",          # raw net charge-offs (needs normalization)
+    "chg_off_ratio","chargeoff_rate","dq_net_chargeoff"),
+  names(panel))[1]
+
+if (is.na(chargeoff_col)) {
+  # Try to construct from raw accounts if available
+  # net charge-offs / average loans
+  raw_opts <- list(
+    c("netchgoffs","lns_tot"),   # confirmed: netchgoffs in call report
+    c("acct_748","lns_tot"),     # NCUA account code fallback
+    c("chargeoffs","lns_tot"),
+    c("net_chargeoffs","lns_tot")
+  )
+  for (opt in raw_opts) {
+    if (all(opt %in% names(panel))) {
+      panel[, chg_tot_lns_ratio := fifelse(
+        get(opt[2]) > 0, get(opt[1]) / get(opt[2]) * 100, NA_real_)]
+      panel[!is.na(chg_tot_lns_ratio),
+            chg_tot_lns_ratio := winsor(chg_tot_lns_ratio)]
+      chargeoff_col <- "chg_tot_lns_ratio"
+      msg("  ✓ chg_tot_lns_ratio constructed from %s / %s",
+          opt[1], opt[2])
+      break
+    }
+  }
+  if (is.na(chargeoff_col))
+    msg("  NOTE: chg_tot_lns_ratio not found — will be excluded from dep_vars")
+} else {
+  msg("  ✓ Charge-off column found: %s", chargeoff_col)
+  if (chargeoff_col != "chg_tot_lns_ratio")
+    panel[, chg_tot_lns_ratio := get(chargeoff_col)]
+}
+
 # ── 3.1 YoY growth for level variables not already done ───────────────────────
 cu_yoy <- function(col) {
   panel[, {
@@ -196,6 +236,26 @@ for (v in yoy_targets) {
     panel[!is.na(get(new_nm)), (new_nm) := winsor(get(new_nm))]
     msg("  ✓ %s (winsorised)", new_nm)
   }
+}
+
+# ── 3.15 oil_group — ensure it exists in panel_model ────────────────────────
+if (!"oil_group" %in% names(panel)) {
+  state_col <- intersect(c("reporting_state","state_code","state"),
+                          names(panel))[1]
+  OIL_ST <- c("TX","ND","LA","AK","WY","OK","NM","CO","WV","PA","MT")
+  if (!is.na(state_col)) {
+    panel[, oil_group := fifelse(
+      toupper(get(state_col)) %in% OIL_ST,
+      "Oil-State", "Non-Oil")]
+    msg("  ✓ oil_group created from %s (%s oil-state CU-qtrs)",
+        state_col,
+        format(panel[oil_group=="Oil-State",.N], big.mark=","))
+  } else {
+    msg("  WARNING: Cannot create oil_group — no state column found")
+  }
+} else {
+  msg("  ✓ oil_group already present (%s Oil-State CU-qtrs)",
+      format(panel[oil_group=="Oil-State",.N], big.mark=","))
 }
 
 # ── 3.2 Lagged dependent variables (for dynamic panel / Arellano-Bond) ────────
@@ -680,13 +740,19 @@ save_plot(p_dist, "03d_variable_distributions.png", w=12, h=9)
 # =============================================================================
 hdr("SECTION 9: Variable Registry & Save")
 
-# Final model variable list
+# Final model variable list — only include vars that exist in panel
 model_vars <- list(
 
   # Dependent variables (VARX endogenous block)
-  dep_vars = c("dq_rate","chg_tot_lns_ratio","netintmrg",
-               "insured_share_growth","cert_share","loan_to_share",
-               "costfds","pcanetworth"),
+  # chg_tot_lns_ratio included only if present
+  dep_vars = intersect(
+    c("dq_rate",
+      "chg_totlns_ratio",   # confirmed column name
+      "chg_tot_lns_ratio",  # alt — whichever exists
+      "netintmrg",
+      "insured_share_growth","cert_share","loan_to_share",
+      "costfds","pcanetworth"),
+    names(panel)),
 
   # Lagged dep vars (dynamic panel)
   dep_lags = paste0(rep(c("dq_rate","netintmrg","costfds"), each=4),
@@ -715,10 +781,12 @@ model_vars <- list(
               "hike_cycle","post_x_oil","zirp_x_oil",
               "post_x_oil_x_direct"),
 
-  # Identifiers
-  ids = c("join_number","year","quarter","yyyyqq","cal_date",
-          "asset_tier","oil_group","reporting_state","cu_group",
-          "oil_exposure_bin","oil_exposure_cont","spillover_exposure")
+  # Identifiers — only include those present
+  ids = intersect(
+    c("join_number","year","quarter","yyyyqq","cal_date",
+      "asset_tier","oil_group","reporting_state","cu_group",
+      "oil_exposure_bin","oil_exposure_cont","spillover_exposure"),
+    names(panel))
 )
 
 # Check availability
