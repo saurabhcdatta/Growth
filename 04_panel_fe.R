@@ -86,7 +86,44 @@ setDT(panel)
 panel[, cal_date := as.Date(paste(year, Q_MONTH[as.character(quarter)],
                                    "01", sep="-"))]
 
-msg("  Panel: %s rows × %s cols | %s CUs | %s quarters",
+msg("  Panel raw: %s rows × %s cols", format(nrow(panel),big.mark=","), ncol(panel))
+
+# ── MEMORY: keep only columns needed for modeling ─────────────────────────────
+# Drop raw acct_* columns, duplicate derived vars, unused lags
+# Keep: identifiers + dep vars + regressors + dummies + exposure
+keep_patterns <- c(
+  # Identifiers
+  "^join_number$","^year$","^quarter$","^yyyyqq$","^cal_date$",
+  "^asset_tier$","^oil_group$","^reporting_state$","^cu_group$",
+  # Dep vars
+  "^dq_rate$","^chg_totlns_ratio$","^netintmrg$","^insured_share_growth$",
+  "^cert_share$","^loan_to_share$","^costfds$","^pcanetworth$",
+  # Dep var lags (1-4 only)
+  "_(lag[1-4])$",
+  # Oil shock vars
+  "^macro_base_yoy_oil","^macro_base_oil_pos","^macro_base_oil_neg",
+  "^macro_base_pbrent$",
+  # Exposure & interactions
+  "^oil_exposure","^spillover","^oil_x_brent","^spillover_x_brent",
+  "^fomc_x_brent","^oil_bartik","^bartik_x_brent",
+  # Macro controls
+  "^macro_base_lurc$","^macro_base_pcpi$","^macro_base_yield_curve$",
+  "^macro_base_rmtg$","^macro_base_real_rate$","^macro_base_uypsav$",
+  "^credit_tightness$","^hpi_yoy$","^macro_base_fomc_regime$",
+  # Dummies & interactions
+  "^post_shale$","^gfc_dummy$","^covid_dummy$","^zirp_era$","^hike_cycle$",
+  "^post_x_oil","^zirp_x_oil","^clean_sample$",
+  # Other useful
+  "^oil_state_prelim$","^roa$","^networth$"
+)
+
+keep_cols <- names(panel)[
+  Reduce(`|`, lapply(keep_patterns, function(p) grepl(p, names(panel))))
+]
+panel <- panel[, ..keep_cols]
+gc()
+
+msg("  Panel trimmed: %s rows × %s cols | %s CUs | %s quarters",
     format(nrow(panel),big.mark=","), ncol(panel),
     format(uniqueN(panel$join_number),big.mark=","),
     uniqueN(panel$yyyyqq))
@@ -159,6 +196,20 @@ msg("  Interactions available : %d", sum(c(OIL_X_DIRECT,OIL_X_SPILL,
                                             OIL_X_FOMC,OIL_X_POST) %in% names(panel)))
 msg("  Macro controls used    : %s", paste(MACRO_CONTROLS, collapse=", "))
 msg("  Dummies used           : %s", paste(DUMMIES, collapse=", "))
+
+# Helper: extract tidy coef table from feols fit
+extract_coefs <- function(fit, model_name, dep_var) {
+  if (is.null(fit)) return(NULL)
+  ct <- tryCatch(coeftable(fit), error=function(e) NULL)
+  if (is.null(ct)) return(NULL)
+  dt <- as.data.table(ct, keep.rownames="term")
+  setnames(dt, c("term","estimate","std_error","t_stat","p_value"))
+  dt[, `:=`(model    = model_name,
+             dep_var  = dep_var,
+             n_obs    = tryCatch(nobs(fit), error=function(e) NA_integer_),
+             r2_within= tryCatch(r2(fit,type="within"), error=function(e) NA_real_))]
+  dt
+}
 
 # Helper: build RHS formula string
 build_rhs <- function(oil_terms, controls=MACRO_CONTROLS,
@@ -250,98 +301,110 @@ run_models <- function(dep_var, data=panel) {
   results
 }
 
-# ── Run for each dep var ───────────────────────────────────────────────────────
-all_models <- lapply(dep_vars, function(v) {
-  res <- run_models(v)
-  if (!is.null(res)) res$dep_var <- v
-  res
-})
-names(all_models) <- dep_vars
+# ── Memory-efficient: one dep var at a time, save coefs only ─────────────────
+main_dvars  <- intersect(c("dq_rate","netintmrg","insured_share_growth",
+                             "costfds"), dep_vars)
+all_coefs   <- list()   # store only extracted coefs, not model objects
+all_r2      <- list()
 
-# ── Subsample models (for main dep vars) ──────────────────────────────────────
-main_dvars <- intersect(c("dq_rate","netintmrg","insured_share_growth",
-                            "costfds"), dep_vars)
+for (v in dep_vars) {
+  if (!v %in% names(panel)) next
 
-subsample_models <- list()
-for (v in main_dvars) {
+  msg("  --- %s ---", v)
   d <- panel[!is.na(get(v)) & !is.na(macro_base_yoy_oil)]
-  rhs_sub <- build_rhs(c(OIL_YOY, OIL_X_DIRECT, OIL_X_SPILL, OIL_X_FOMC))
+  if (nrow(d) < 1000) { msg("  Too few obs, skipping"); next }
 
-  # M7: Oil-state CUs only (direct channel)
-  d_oil <- d[oil_group == "Oil-State" | oil_exposure_bin == 1L]
-  subsample_models[[paste0(v,"_oil")]] <- tryCatch(
-    feols(as.formula(paste(v, "~", build_rhs(c(OIL_YOY)), "| join_number + yyyyqq")),
-          data=d_oil, cluster=~join_number, warn=FALSE, notes=FALSE),
-    error=function(e) NULL)
+  # Run models for this dep var only
+  mods <- run_models(v, data=d)
 
-  # M8: Non-oil CUs only (indirect channel)
-  d_nonoil <- d[is.na(oil_group) | oil_group == "Non-Oil"]
-  subsample_models[[paste0(v,"_nonoil")]] <- tryCatch(
-    feols(as.formula(paste(v, "~", build_rhs(c(OIL_YOY, OIL_X_SPILL)),
-                           "| join_number + yyyyqq")),
-          data=d_nonoil, cluster=~join_number, warn=FALSE, notes=FALSE),
-    error=function(e) NULL)
+  # Extract coefficients immediately
+  v_coefs <- rbindlist(lapply(names(mods)[names(mods)!="dep_var"], function(m) {
+    extract_coefs(mods[[m]], m, v)
+  }), fill=TRUE)
+  all_coefs[[v]] <- v_coefs
 
-  # M9: Pre-shale (2005-2014)
-  d_pre <- d[post_shale == 0L]
-  subsample_models[[paste0(v,"_pre")]] <- tryCatch(
-    feols(as.formula(paste(v, "~", build_rhs(c(OIL_YOY, OIL_X_DIRECT,
-                                                OIL_X_SPILL)),
-                           "| join_number + yyyyqq")),
-          data=d_pre, cluster=~join_number, warn=FALSE, notes=FALSE),
-    error=function(e) NULL)
+  # Extract R²
+  v_r2 <- rbindlist(lapply(c("M1","M2","M3","M4","M5","M6"), function(m) {
+    if (is.null(mods[[m]])) return(NULL)
+    data.table(dep_var=v, model=m,
+               r2_within = tryCatch(r2(mods[[m]],type="within"), error=function(e) NA_real_),
+               n_obs     = tryCatch(nobs(mods[[m]]), error=function(e) NA_integer_))
+  }), fill=TRUE)
+  all_r2[[v]] <- v_r2
 
-  # M10: Post-shale (2015-2025)
-  d_post <- d[post_shale == 1L]
-  subsample_models[[paste0(v,"_post")]] <- tryCatch(
-    feols(as.formula(paste(v, "~", build_rhs(c(OIL_YOY, OIL_X_DIRECT,
-                                                OIL_X_SPILL)),
-                           "| join_number + yyyyqq")),
-          data=d_post, cluster=~join_number, warn=FALSE, notes=FALSE),
-    error=function(e) NULL)
+  # Save regression tables for this dep var immediately
+  if (v %in% main_dvars) {
+    mod_list <- Filter(Negate(is.null),
+                       list(M1=mods$M1, M2=mods$M2, M3=mods$M3,
+                            M4=mods$M4, M5=mods$M5, M6=mods$M6))
+    if (length(mod_list) > 0) {
+      tbl_path <- file.path("Tables", paste0("04a_fe_", v, ".txt"))
+      tryCatch({
+        modelsummary(mod_list,
+                     coef_map = c(
+                       macro_base_yoy_oil      = "PBRENT YoY (beta1 indirect)",
+                       oil_x_brent             = "x Oil-State (beta2 direct)",
+                       spillover_x_brent       = "x Spillover (beta3)",
+                       fomc_x_brent            = "x FOMC Regime (beta4)",
+                       post_x_oil              = "x Post-Shale (beta5)",
+                       macro_base_lurc         = "Unemployment",
+                       macro_base_yield_curve  = "Yield Curve",
+                       macro_base_real_rate    = "Real Rate",
+                       credit_tightness        = "Credit Tightness",
+                       post_shale              = "Post-Shale Dummy",
+                       gfc_dummy               = "GFC Dummy",
+                       covid_dummy             = "COVID Dummy"),
+                     stars  = c("*"=0.1,"**"=0.05,"***"=0.01),
+                     output = tbl_path,
+                     title  = paste("Panel FE:", v))
+        msg("  Table saved: %s", tbl_path)
+      }, error=function(e) msg("  Table error: %s", e$message))
+    }
+  }
 
-  msg("  Subsample models estimated for: %s", v)
+  # Subsample models for main dep vars
+  if (v %in% main_dvars) {
+    rhs_base <- build_rhs(c(OIL_YOY, OIL_X_DIRECT, OIL_X_SPILL))
+
+    sub_specs <- list(
+      oil    = list(data=d[oil_group=="Oil-State" | oil_exposure_bin==1L],
+                    rhs =build_rhs(c(OIL_YOY))),
+      nonoil = list(data=d[is.na(oil_group) | oil_group=="Non-Oil"],
+                    rhs =build_rhs(c(OIL_YOY, OIL_X_SPILL))),
+      pre    = list(data=d[post_shale==0L], rhs=rhs_base),
+      post   = list(data=d[post_shale==1L], rhs=rhs_base)
+    )
+
+    for (sname in names(sub_specs)) {
+      spec <- sub_specs[[sname]]
+      if (nrow(spec$data) < 500) next
+      fit <- tryCatch(
+        feols(as.formula(paste(v,"~",spec$rhs,"| join_number + yyyyqq")),
+              data=spec$data, cluster=~join_number,
+              warn=FALSE, notes=FALSE),
+        error=function(e) NULL)
+      cc <- extract_coefs(fit, paste0("M_",sname), v)
+      if (!is.null(cc)) all_coefs[[paste0(v,"_",sname)]] <- cc
+      rm(fit); gc()
+    }
+    msg("  Subsample models done for: %s", v)
+  }
+
+  # Clear model objects from memory — keep only extracted coefs
+  rm(mods, d); gc()
+  msg("  Memory freed after %s", v)
 }
 
+# Combine all results
+coef_tbl <- rbindlist(all_coefs, fill=TRUE)
+r2_data  <- rbindlist(all_r2,   fill=TRUE)
+
 # =============================================================================
-# 5. RESULTS EXTRACTION
+# 5. RESULTS EXTRACTION  (coef_tbl already built in loop above)
 # =============================================================================
 hdr("SECTION 5: Results Extraction")
 
-# Extract coefficients into tidy table
-extract_coefs <- function(fit, model_name, dep_var) {
-  if (is.null(fit)) return(NULL)
-  ct <- tryCatch(coeftable(fit), error=function(e) NULL)
-  if (is.null(ct)) return(NULL)
-  dt <- as.data.table(ct, keep.rownames="term")
-  setnames(dt, c("term","estimate","std_error","t_stat","p_value"))
-  dt[, `:=`(model=model_name, dep_var=dep_var,
-             n_obs    = nobs(fit),
-             r2_within = r2(fit, type="within") %||% NA,
-             n_cu     = uniqueN(fit$obs_selection$obsCluster))]
-  dt
-}
-
-coef_tbl <- rbindlist(lapply(dep_vars, function(v) {
-  mods <- all_models[[v]]
-  if (is.null(mods)) return(NULL)
-  rbindlist(lapply(names(mods)[names(mods)!="dep_var"], function(m) {
-    extract_coefs(mods[[m]], m, v)
-  }), fill=TRUE)
-}), fill=TRUE)
-
-# Add subsample coefs
-sub_coefs <- rbindlist(lapply(names(subsample_models), function(nm) {
-  parts  <- str_split(nm, "_(?=(oil|nonoil|pre|post)$)")[[1]]
-  dep_v  <- parts[1]
-  samp   <- parts[2]
-  extract_coefs(subsample_models[[nm]],
-                paste0("M_", samp), dep_v)
-}), fill=TRUE)
-
-coef_tbl <- rbindlist(list(coef_tbl, sub_coefs), fill=TRUE)
-
-# Significance flags
+# coef_tbl was built in the model loop — just add significance flags
 coef_tbl[, sig := fcase(
   p_value < 0.01, "***",
   p_value < 0.05, "**",
@@ -349,12 +412,15 @@ coef_tbl[, sig := fcase(
   default        = ""
 )]
 
-msg("  Coefficient table: %s rows | %s unique terms",
-    nrow(coef_tbl), uniqueN(coef_tbl$term))
+msg("  Coefficient table: %s rows | %s unique terms | %s models",
+    format(nrow(coef_tbl),big.mark=","),
+    uniqueN(coef_tbl$term),
+    uniqueN(paste(coef_tbl$dep_var, coef_tbl$model)))
 
-saveRDS(list(models=all_models, subsample=subsample_models,
-              coef_tbl=coef_tbl),
+# Save coef table only (model objects already freed from memory)
+saveRDS(list(coef_tbl=coef_tbl, r2_data=r2_data),
         "Data/fe_results.rds")
+msg("  Saved: Data/fe_results.rds")
 
 # =============================================================================
 # 6. KEY RESULTS TABLE — OIL COEFFICIENTS ACROSS DEP VARS
@@ -601,54 +667,12 @@ if (nrow(r2_data[!is.na(r2_within)]) > 0) {
 }
 
 # =============================================================================
-# 8. REGRESSION TABLES
+# 8. REGRESSION TABLES  (already saved inside model loop)
 # =============================================================================
 hdr("SECTION 8: Regression Tables")
-
-for (v in main_dvars) {
-  mods <- all_models[[v]]
-  if (is.null(mods)) next
-
-  mod_list <- Filter(Negate(is.null),
-                     list(M1=mods$M1, M2=mods$M2, M3=mods$M3,
-                          M4=mods$M4, M5=mods$M5, M6=mods$M6))
-  if (length(mod_list) == 0) next
-
-  # Coefficient labels
-  coef_map <- c(
-    macro_base_yoy_oil       = "PBRENT YoY (β₁ indirect)",
-    oil_x_brent              = "× Oil-State (β₂ direct)",
-    spillover_x_brent        = "× Spillover (β₃)",
-    fomc_x_brent             = "× FOMC Regime (β₄)",
-    post_x_oil               = "× Post-Shale (β₅)",
-    post_x_oil_x_direct      = "× Post×Direct (β₆)",
-    macro_base_yoy_oil_lag1  = "PBRENT YoY Lag1",
-    macro_base_yoy_oil_lag2  = "PBRENT YoY Lag2",
-    macro_base_lurc          = "Unemployment",
-    macro_base_yield_curve   = "Yield Curve",
-    macro_base_real_rate     = "Real Rate",
-    credit_tightness         = "Credit Tightness",
-    post_shale               = "Post-Shale Dummy",
-    gfc_dummy                = "GFC Dummy",
-    covid_dummy              = "COVID Dummy"
-  )
-
-  tbl_path <- file.path("Tables", paste0("04a_fe_", v, ".txt"))
-  tryCatch({
-    modelsummary(
-      mod_list,
-      coef_map    = coef_map,
-      stars       = c("*"=0.1, "**"=0.05, "***"=0.01),
-      gof_map     = c("nobs","r.squared","adj.r.squared"),
-      output      = tbl_path,
-      title       = paste("Panel FE Results:", dep_labels[v] %||% v),
-      notes       = "CU FE + Quarter FE | Clustered SE at CU level"
-    )
-    msg("  Table saved: %s", tbl_path)
-  }, error=function(e) {
-    msg("  Table error for %s: %s", v, e$message)
-  })
-}
+msg("  Tables were saved inside the model loop to Tables/04a_fe_*.txt")
+existing_tables <- list.files("Tables", pattern="04a_fe_.*\.txt", full.names=FALSE)
+msg("  Tables found: %s", paste(existing_tables, collapse=", "))
 
 # =============================================================================
 # 9. COMPLETE
