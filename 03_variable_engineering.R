@@ -164,7 +164,7 @@ msg("                          post_x_oil_x_direct, clean_sample")
 # Print dummy distribution
 dummy_cols <- c("post_shale","gfc_dummy","zirp_era","covid_dummy",
                 "hike_cycle","clean_sample")
-cat("\n  Dummy variable distributions (% of CU-quarter obs):\n")
+cat("\n  Dummy variable distributions (%% of CU-quarter obs):\n")
 for (d in dummy_cols) {
   if (d %in% names(panel))
     cat(sprintf("    %-25s : %.1f%% obs = 1\n", d,
@@ -297,7 +297,7 @@ if (all(c("yield_curve","real_rate","lurc") %in% names(mac_spine))) {
 # ── 4.4 HPI momentum ──────────────────────────────────────────────────────────
 if ("phpi" %in% names(mac_spine)) {
   mac_spine[, hpi_yoy := (phpi - shift(phpi,4)) / shift(phpi,4) * 100]
-  msg("  ✓ hpi_yoy (HPI YoY %)")
+  msg("  ✓ hpi_yoy (HPI YoY %%)")
 }
 
 # ── 4.5 Savings rate momentum ─────────────────────────────────────────────────
