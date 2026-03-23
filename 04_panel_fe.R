@@ -235,8 +235,29 @@ hdr("SECTION 4: Model Estimation")
 
 # feols specification:
 #   join_number FE (absorbs CU-level time-invariant characteristics)
-#   yyyyqq FE (absorbs quarter-level aggregate shocks)
+#   yyyyqq FE (absorbs quarter-level aggregate shocks — including macro level)
 #   Clustered SE at join_number level (within-CU autocorrelation)
+#
+# CRITICAL IDENTIFICATION NOTE:
+#   macro_base_yoy_oil is the SAME VALUE for every CU in a given quarter.
+#   It is therefore PERFECTLY COLLINEAR with the yyyyqq fixed effect and
+#   will be dropped by feols (absorbed by quarter FE).
+#
+#   This is NOT a bug — it is standard two-way FE identification:
+#   The quarter FE absorbs ALL common macro shocks including oil price changes.
+#   The oil shock effect is identified ONLY through CROSS-SECTIONAL VARIATION:
+#     β₂ = oil_x_brent     → oil-state vs non-oil CU differential response
+#     β₃ = spillover_x_brent → high vs low spillover CU differential response
+#     β₄ = fomc_x_brent    → differential response by FOMC regime
+#
+#   This is the Bartik / shift-share identification strategy:
+#   "Did oil-exposed CUs respond MORE to oil shocks than unexposed CUs?"
+#   NOT: "Did all CUs respond to oil shocks?"
+#
+#   For the aggregate (no cross-sectional variation) effect, use:
+#   - The cross-correlogram (Chart 03) from EDA
+#   - A time-series model without quarter FE
+#   - The event study charts (2c series)
 
 run_models <- function(dep_var, data=panel) {
   if (!dep_var %in% names(data)) {
@@ -250,8 +271,11 @@ run_models <- function(dep_var, data=panel) {
 
   results <- list()
 
-  # ── M1: Baseline — oil only ────────────────────────────────────────────────
-  rhs1 <- build_rhs(c(OIL_YOY))
+  # ── M1: Baseline ─────────────────────────────────────────────────────────────
+  # NOTE: macro_base_yoy_oil alone is collinear with yyyyqq FE (same value
+  # for all CUs in a quarter). Must pair with a cross-sectional interaction.
+  # M1 uses oil_x_brent (direct channel) as the primary oil shock measure.
+  rhs1 <- build_rhs(c(OIL_X_DIRECT))
   results$M1 <- tryCatch(
     feols(as.formula(paste(dep_var, "~", rhs1, "| join_number + yyyyqq")),
           data=d, cluster=~join_number, warn=FALSE, notes=FALSE),
@@ -575,23 +599,25 @@ msg("  coef_tbl M_pre rows: %d | M_post rows: %d",
     coef_tbl[model=="M_pre", .N],
     coef_tbl[model=="M_post", .N])
 
+# NOTE: macro_base_yoy_oil (OIL_YOY) is absorbed by quarter FE because it
+# is a time-series variable with the same value for ALL CUs in a given quarter.
+# The surviving oil terms in subsample models are the INTERACTION terms
+# (oil_x_brent, spillover_x_brent) which vary cross-sectionally.
+# Use oil_x_brent (direct channel) as the structural break comparison term.
+
+BREAK_TERM <- intersect(c("oil_x_brent","spillover_x_brent",
+                            "macro_base_yoy_oil"), 
+                          coef_tbl[model=="M_pre", unique(term)])[1]
+
+if (is.na(BREAK_TERM)) BREAK_TERM <- coef_tbl[model=="M_pre", unique(term)[1]]
+
+msg("  Using term '%s' for structural break chart", BREAK_TERM)
+
 break_data <- coef_tbl[
   model %in% c("M_pre","M_post") &
-  term == OIL_YOY &
+  term == BREAK_TERM &
   !is.na(estimate) & !is.na(std_error)
 ]
-
-# If empty — subsample coefs stored under different term name, try all oil terms
-if (nrow(break_data) == 0) {
-  msg("  WARNING: M_pre/M_post rows empty for OIL_YOY — trying all terms")
-  msg("  Available terms in M_pre: %s",
-      paste(coef_tbl[model=="M_pre", unique(term)], collapse=", "))
-  break_data <- coef_tbl[
-    model %in% c("M_pre","M_post") &
-    grepl("yoy_oil|pbrent", term, ignore.case=TRUE) &
-    !is.na(estimate)
-  ]
-}
 
 if (nrow(break_data) == 0) {
   msg("  WARNING: No pre/post shale data for structural break chart — skipping 04a-03")
@@ -622,7 +648,7 @@ p_break <- ggplot(break_data[!is.na(dep_label)],
                                "Post-Shale (2015-2025)"=16),
                      name="Era") +
   labs(title    = "FIGURE 04a-03 — Structural Break: PBRENT Coefficient Pre vs Post 2015Q1",
-       subtitle = "Direct test of shale revolution structural break | β = ∂outcome/∂PBRENT YoY",
+       subtitle = paste("Direct test of shale revolution structural break | Term:", BREAK_TERM),
        caption  = "CU FE + Quarter FE | Clustered SE | Controls included",
        x="PBRENT YoY Coefficient", y=NULL) +
   theme_pub()
@@ -698,7 +724,7 @@ if (exists("r2_data") && nrow(r2_data[!is.na(r2_within)]) > 0) {
 # =============================================================================
 hdr("SECTION 8: Regression Tables")
 msg("  Tables were saved inside the model loop to Tables/04a_fe_*.txt")
-existing_tables <- list.files("Tables", pattern="04a_fe_.*\.txt", full.names=FALSE)
+existing_tables <- list.files("Tables", pattern="04a_fe_.*[.]txt", full.names=FALSE)
 msg("  Tables found: %s", paste(existing_tables, collapse=", "))
 
 # =============================================================================
