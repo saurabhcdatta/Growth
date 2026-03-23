@@ -793,26 +793,62 @@ if (exists("r2_data") && nrow(r2_data) > 0) {
     # End-point labels (rightmost non-NA model per dep_var)
     r2_end <- r2_plot[, .SD[which.max(as.integer(model))], by=dep_var]
 
+    # Determine appropriate y-axis format based on actual value range
+    r2_max  <- max(r2_plot$r2_within, na.rm=TRUE)
+    r2_min  <- min(r2_plot$r2_within, na.rm=TRUE)
+    msg("  04a-05: r2_within range [%.6f, %.6f]", r2_min, r2_max)
+
+    # Choose label precision: if max < 0.01 use 4 decimal places (e.g. 0.0023%)
+    # if max < 0.10 use 2 decimal places; else 1 decimal place
+    r2_accuracy <- ifelse(r2_max < 0.001, 0.0001,
+                   ifelse(r2_max < 0.01,  0.001,
+                   ifelse(r2_max < 0.10,  0.01, 0.1)))
+
+    # Add value labels directly on each point (avoids illegible y-axis)
+    # Format: e.g. "0.12%" or "0.0034%"
+    fmt_pct <- function(x) {
+      ifelse(is.na(x), "",
+             ifelse(x < 0.001, sprintf("%.4f%%", x * 100),
+             ifelse(x < 0.01,  sprintf("%.3f%%", x * 100),
+                               sprintf("%.2f%%", x * 100))))
+    }
+    r2_plot[, r2_label := fmt_pct(r2_within)]
+
     p_r2 <- ggplot(r2_plot,
                    aes(x=model, y=r2_within,
                        colour=dep_label, group=dep_label)) +
       geom_line(linewidth=0.85, alpha=0.9) +
       geom_point(size=2.8) +
+      # Point value labels (above each dot)
+      geom_text(aes(label=r2_label),
+                vjust=-0.9, size=2.5, fontface="plain",
+                position=position_dodge(0)) +
+      # End-of-line dep var labels
       geom_text(data=r2_end, aes(label=dep_label),
-                hjust=-0.15, size=3, fontface="bold") +
+                hjust=-0.12, size=3, fontface="bold") +
       scale_colour_brewer(palette="Dark2", guide="none") +
-      scale_y_continuous(labels=percent_format(accuracy=0.1),
-                         expand=expansion(mult=c(0.02, 0.08))) +
+      scale_y_continuous(
+        labels  = function(x) sprintf("%.4f%%", x * 100),
+        expand  = expansion(mult=c(0.05, 0.15))   # extra top room for value labels
+      ) +
       scale_x_discrete(labels=spec_labels,
                         expand=expansion(add=c(0.3, 1.5))) +
       labs(title    = "FIGURE 04a-05 — Within R² by Model Specification",
-           subtitle = "How much explanatory power each additional oil channel adds | After absorbing CU FE + Quarter FE",
-           caption  = "Within R² (excludes variance explained by fixed effects) | fixest::r2(fit, 'wr2')",
+           subtitle = paste0(
+             "How much cross-sectional explanatory power each oil channel adds\n",
+             "Note: Small within-R² is expected — quarter FE absorbs all common macro/oil variation;\n",
+             "only cross-sectional differential exposure is identified here (Bartik design)"
+           ),
+           caption  = paste0(
+             "Within R² after absorbing CU FE + Quarter FE | fixest::r2(fit, 'wr2')\n",
+             sprintf("Range: %.4f%% – %.4f%%", r2_min*100, r2_max*100)
+           ),
            x="Model specification", y="Within R²") +
       theme_pub() +
       theme(axis.text.x        = element_text(size=8, lineheight=1.2),
-            panel.grid.major.x = element_blank())
-    save_plot(p_r2, "04a_05_r2_progression.png", w=11, h=6)
+            panel.grid.major.x = element_blank(),
+            plot.subtitle       = element_text(size=8.5, lineheight=1.3))
+    save_plot(p_r2, "04a_05_r2_progression.png", w=12, h=6)
 
   } else {
     msg("  04a-05: r2_plot empty after NA filter — all r2_within are NA")
