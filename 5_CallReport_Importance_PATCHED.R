@@ -179,12 +179,13 @@ TAUTOLOGY_PATTERNS <- c(
   "irakeogh",           "ira_keogh",
   # Share certificates / CDs (raw amounts) — but allow shrcert_pct / share_cert_pct ratios
   "shrcert",            "share_cert",           "_cd_amt",   "_cds_tot",
-  # Generic catch-all panel aggregates — match "all" as a standalone token
-  # (^all_, _all_, all_X_rsd, all_X_rmean) but not "small_", "walls", etc.
-  "^all_[a-z]+_rsd[0-9]+",
-  "^all_[a-z]+_rmean[0-9]+",
-  "_all_[a-z]+_rsd[0-9]+",
-  "_all_[a-z]+_rmean[0-9]+",
+  # Generic catch-all panel aggregates — anything starting with "all_"
+  # or with "_all_" + transformation suffix is a panel-mean aggregate and
+  # behaves as a size proxy. Match standalone "all" token followed by
+  # underscore and a transformation, allowing optional yoy_/qoq_ prefix.
+  "^all_[a-z_]+_(rsd|rmean|accel|cyc|chg|lag)[0-9]*$",
+  "^yoy_all_",          "^qoq_all_",
+  "_all_[a-z_]+_(rsd|rmean|accel|cyc|chg|lag)[0-9]*$",
   "^total_",            "totaled"
 )
 
