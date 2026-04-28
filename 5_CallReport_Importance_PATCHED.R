@@ -110,38 +110,124 @@ id_vars <- c("date", "categories", "cat_label", "q1", "q2", "q3", "q4", "qtr")
 # Macro variables (excluded — those are Part 4's domain)
 macro_vars <- grep("^macro_", num_cols, value = TRUE)
 
-# ── ENDOGENEITY EXCLUSION ────────────────────────────────
-# Drop any variable that is a transformation of the same series
-# being predicted. These create circular "drivers" — predicting
-# growth from yesterday's growth, market share from itself, etc.
-# This block ensures the importance ranking surfaces TRULY
-# exogenous structural / operational drivers, not autoregressive
-# echoes of the dependent variable.
+# ── ENDOGENEITY EXCLUSION (TIGHTENED) ────────────────────
+# A call report variable is a meaningful "driver" of CU growth only
+# if it is economically distinct from the dependent variable.
+#
+# Three classes of variables get dropped:
+#
+#   (1) DIRECT GROWTH ECHOES — log/first-differences of the dependent
+#       variable, market share, count and asset variants. These are
+#       the dependent variable in disguise.
+#
+#   (2) BALANCE-SHEET LEVELS — total deposits, regular shares, total
+#       loans, NCUSIF-insured shares, all numeric NCUA account-code
+#       dollar amounts. These are mechanical sub-components of total
+#       assets and correlate at r ≈ 0.99 with asset growth simply
+#       because total deposits ≈ total assets.
+#
+#   (3) AUTOCORRELATED LEVELS — anything labeled with "_tot", "_mil",
+#       "_amt", "_bal" suffix unless explicitly a ratio.
+#
+# What REMAINS (and what we want):
+#   - Ratios: loan-to-share, loan-to-asset, capital ratio, NIM, ROA
+#   - Rates:  delinquency rate, charge-off rate, acquisition rate
+#   - Per-unit metrics: comp-per-employee, members-per-CU, branches
+#   - Composition shares: invest_pct, cash_pct, loan_mix_pct
+#   - Operational counts: branches, FTE, board size
 
-# Patterns identifying any variant of CU count / asset growth
 ENDOGENOUS_PATTERNS <- c(
-  "^ld_fcu",             "^ld_fiscu",            # log differences = YoY growth
-  "^d_fcu",              "^d_fiscu",             # first differences
-  "fcu_count",           "fiscu_count",          # all count derivatives
-  "fcu_assets",          "fiscu_assets",         # all asset derivatives
-  "assets_tot",                                  # the total asset series itself
-  "share_fcu",           "share_fiscu",          # market share = function of count/assets
-  "^yoy_fcu",            "^yoy_fiscu",           # all YoY growth variants
-  "^qoq_fcu",            "^qoq_fiscu",           # all QoQ growth variants
-  "n_active",            "n_total",              # active/total CU counts
-  "growth_rate",                                 # any growth-rate derived variable
-  "ln_assets"                                    # log of total assets — proxies size which proxies growth
+  # ── (1) Direct growth echoes ──
+  "^ld_fcu",     "^ld_fiscu",          # log differences = YoY growth
+  "^d_fcu",      "^d_fiscu",           # first differences
+  "fcu_count",   "fiscu_count",        # count derivatives
+  "fcu_assets",  "fiscu_assets",       # asset derivatives
+  "share_fcu",   "share_fiscu",        # market share
+  "^yoy_fcu",    "^yoy_fiscu",         # all YoY growth variants
+  "^qoq_fcu",    "^qoq_fiscu",
+  "n_active",    "n_total",
+  "growth_rate"
+)
+
+# Tautology patterns — match if the variable LOOKS LIKE a level
+# (totals, dollar amounts, account-code dollar values) rather than
+# a ratio or rate.
+TAUTOLOGY_PATTERNS <- c(
+  # Total-asset and total-deposit absolute levels (in any units)
+  "assets_tot",          "assets_mil",         "assets_thou",
+  "ln_assets",           "log_assets",
+  "dep_tot",             "deposits_tot",        "shares_tot",
+  "loans_tot",           "loans_amt",
+  "insured_tot",         "insured_amt",
+  "nonshrreg",           "regshr",              "share_drft",
+  "money_mkt",           "share_cert",          "ira_keogh",
+  "borrowings",          "borrowings_amt",
+  # Raw NCUA account codes (any 3- or 4-digit code prefixed by acct)
+  "acct_[0-9]{3,4}",
+  # Generic level-suffix patterns (drops yoy_X_amt, X_bal, X_dollars too)
+  "_amt$",     "_bal$",     "_dollars$",       "_dollar$",
+  # Compensation/expense LEVELS (per-employee and ratios are still kept
+  # because they don't include "_tot", "_amt", "_bal")
+  "exp_tot",            "expense_tot",         "income_tot",
+  # Member counts as raw level (membership rates and per-CU metrics survive)
+  "members_tot",        "potential_members_tot",
+  "^members$",          "members_cyc",          "members_accel",
+  "members_chg",        "members_lag",          "members_rmean",
+  "^yoy_members(_|$)",  "^qoq_members(_|$)",
+  "uninsured_mbr",      "uninsured_member",
+  # IRA/Keogh and other deposit sub-components
+  "irakeogh",           "ira_keogh",
+  # Share certificates / CDs (raw amounts) — but allow shrcert_pct / share_cert_pct ratios
+  "shrcert",            "share_cert",           "_cd_amt",   "_cds_tot",
+  # Generic catch-all panel aggregates — match "all" as a standalone token
+  # (^all_, _all_, all_X_rsd, all_X_rmean) but not "small_", "walls", etc.
+  "^all_[a-z]+_rsd[0-9]+",
+  "^all_[a-z]+_rmean[0-9]+",
+  "_all_[a-z]+_rsd[0-9]+",
+  "_all_[a-z]+_rmean[0-9]+",
+  "^total_",            "totaled"
 )
 
 is_endogenous <- function(v) {
   vl <- tolower(v)
   any(vapply(ENDOGENOUS_PATTERNS, function(p) grepl(p, vl), logical(1)))
 }
+is_tautology <- function(v) {
+  vl <- tolower(v)
+  any(vapply(TAUTOLOGY_PATTERNS, function(p) grepl(p, vl), logical(1)))
+}
 
 endogenous_vars <- num_cols[vapply(num_cols, is_endogenous, logical(1))]
+tautology_vars  <- num_cols[vapply(num_cols, is_tautology,  logical(1))]
+tautology_vars  <- setdiff(tautology_vars, endogenous_vars)  # don't double-count
 
-# Everything else that's numeric = call report features
-cr_feats <- setdiff(num_cols, c(target_vars, id_vars, macro_vars, endogenous_vars))
+# Also drop anything with extreme correlation against ANY of the
+# four dependent variables (a final safety net catching mechanical
+# sub-components missed by the named-pattern lists).
+TAUTOLOGY_CORR_THRESHOLD <- 0.85
+high_corr_vars <- character(0)
+candidates <- setdiff(num_cols, c(target_vars, id_vars, macro_vars,
+                                   endogenous_vars, tautology_vars))
+for (v in candidates) {
+  x <- panel[[v]]
+  max_abs_r <- 0
+  for (tv in target_vars) {
+    if (!tv %in% names(panel)) next
+    y <- panel[[tv]]
+    ok <- !is.na(x) & !is.na(y)
+    if (sum(ok) < 30L) next
+    r <- suppressWarnings(cor(x[ok], y[ok]))
+    if (!is.na(r) && abs(r) > max_abs_r) max_abs_r <- abs(r)
+  }
+  if (max_abs_r >= TAUTOLOGY_CORR_THRESHOLD) {
+    high_corr_vars <- c(high_corr_vars, v)
+  }
+}
+
+# Final feature pool
+cr_feats <- setdiff(num_cols, c(target_vars, id_vars, macro_vars,
+                                 endogenous_vars, tautology_vars,
+                                 high_corr_vars))
 
 # Remove near-constant features
 cr_feats <- cr_feats[vapply(cr_feats, function(v) {
@@ -151,18 +237,31 @@ cr_feats <- cr_feats[vapply(cr_feats, function(v) {
   sd(x) > 1e-10
 }, logical(1))]
 
-message(sprintf("  Call report features: %d", length(cr_feats)))
-message(sprintf("  (Excluded: %d macro, %d targets, %d ids, %d endogenous)",
-                length(macro_vars), length(target_vars),
-                length(id_vars), length(endogenous_vars)))
+message(sprintf("  Call report features kept: %d", length(cr_feats)))
+message(sprintf("    Targets:           %d excluded", length(target_vars)))
+message(sprintf("    Identifiers:       %d excluded", length(id_vars)))
+message(sprintf("    Macro vars:        %d excluded", length(macro_vars)))
+message(sprintf("    Direct growth:     %d excluded (echoes of dependent var)",
+                length(endogenous_vars)))
+message(sprintf("    Balance-sheet:     %d excluded (levels, dollar amounts, account codes)",
+                length(tautology_vars)))
+message(sprintf("    High-corr (|r|>=%.2f): %d excluded (mechanical sub-components, checked vs all 4 targets)",
+                TAUTOLOGY_CORR_THRESHOLD, length(high_corr_vars)))
 
-# Show first 20 endogenous exclusions for verification
-if (length(endogenous_vars) > 0) {
-  message("  Endogenous variables removed (first 20):")
-  for (v in head(sort(endogenous_vars), 20))
+if (length(tautology_vars) > 0) {
+  message("\n  Balance-sheet levels removed (first 20):")
+  for (v in head(sort(tautology_vars), 20))
     message(sprintf("    - %s", v))
-  if (length(endogenous_vars) > 20)
-    message(sprintf("    ... and %d more", length(endogenous_vars) - 20))
+  if (length(tautology_vars) > 20)
+    message(sprintf("    ... and %d more", length(tautology_vars) - 20))
+}
+if (length(high_corr_vars) > 0) {
+  message(sprintf("\n  Variables with |corr| >= %.2f to ANY target — removed:",
+                  TAUTOLOGY_CORR_THRESHOLD))
+  for (v in head(sort(high_corr_vars), 30))
+    message(sprintf("    - %s", v))
+  if (length(high_corr_vars) > 30)
+    message(sprintf("    ... and %d more", length(high_corr_vars) - 30))
 }
 
 # ── Thematic grouping for call report variables ──────────
