@@ -167,11 +167,13 @@ message("Method B: argmax over lag 1..", MAX_LAG, "  (forces a leading signal)")
 message("Method C: longest lag where |r| >= 0.8 * max  (signal persistence)")
 message(strrep("═", 110))
 
-# Use Method A (current behaviour) for the chart — change the next line to
-# diag$lag_B_lead or diag$lag_C_persist to switch methods.
+# Use Method B (forced lag >= 1) for the chart — call report variables
+# are mostly coincident with growth at lag 0, so the leading lag is
+# the economically interesting answer. Change to lag_A_argmax or
+# lag_C_persist to switch methods.
 leads <- diag[, .(variable,
-                   best_lead_q   = lag_A_argmax,
-                   best_abs_corr = corr_max)]
+                   best_lead_q   = lag_B_lead,
+                   best_abs_corr = corr_at_lag_B)]
 
 # Merge importance with lead time
 imp <- merge(imp, leads, by = "variable", all.x = TRUE)
@@ -234,6 +236,12 @@ CR_DICT <- list(
   loans_first_mtg      = list(desc = "First Mortgages",                        theme = "Lending Activity"),
   loans_originated     = list(desc = "Loans Originated (Period)",              theme = "Lending Activity"),
   loan_growth          = list(desc = "Loan Origination Volume",                theme = "Lending Activity"),
+  lns_re_1_fr_shr      = list(desc = "1st Lien RE Loans (Share of Loans)",     theme = "Asset Composition"),
+  lns_re_2_fr_shr      = list(desc = "2nd Lien RE Loans (Share of Loans)",     theme = "Asset Composition"),
+  lns_auto_fr_shr      = list(desc = "Auto Loans (Share of Loans)",            theme = "Asset Composition"),
+  lns_unsecured_fr_shr = list(desc = "Unsecured Loans (Share of Loans)",       theme = "Asset Composition"),
+  lns_credit_card_fr_shr = list(desc = "Credit Cards (Share of Loans)",        theme = "Asset Composition"),
+  lns_business_fr_shr  = list(desc = "Business Loans (Share of Loans)",        theme = "Asset Composition"),
 
   # ── Credit Risk ──
   delinq_loans         = list(desc = "Delinquent Loans",                       theme = "Credit Risk"),
@@ -242,6 +250,18 @@ CR_DICT <- list(
   net_chargeoffs       = list(desc = "Net Charge-Offs",                        theme = "Credit Risk"),
   allowance_ratio      = list(desc = "Allowance for Loan Losses Ratio",        theme = "Credit Risk"),
   troubled_debt        = list(desc = "Troubled Debt Restructurings",           theme = "Credit Risk"),
+  dq_auto_new_rate     = list(desc = "New Auto Loan Delinquency Rate",         theme = "Credit Risk"),
+  dq_auto_used_rate    = list(desc = "Used Auto Loan Delinquency Rate",        theme = "Credit Risk"),
+  dq_credit_card_rate  = list(desc = "Credit Card Delinquency Rate",           theme = "Credit Risk"),
+  dq_re_rate           = list(desc = "Real Estate Loan Delinquency Rate",      theme = "Credit Risk"),
+  dq_unsecured_rate    = list(desc = "Unsecured Loan Delinquency Rate",        theme = "Credit Risk"),
+  dq_first_mtg_rate    = list(desc = "First Mortgage Delinquency Rate",        theme = "Credit Risk"),
+  dq_total_rate        = list(desc = "Total Loan Delinquency Rate",            theme = "Credit Risk"),
+
+  # ── Capital ratios (alternative names) ──
+  pcanetworth          = list(desc = "PCA Net Worth Ratio",                    theme = "Capital & Solvency"),
+  net_worth_pct        = list(desc = "Net Worth (% of Assets)",                theme = "Capital & Solvency"),
+  pca_class            = list(desc = "PCA Capital Classification",             theme = "Capital & Solvency"),
 
   # ── Profitability ──
   roa                  = list(desc = "Return on Assets (ROA)",                 theme = "Profitability"),
@@ -266,6 +286,9 @@ CR_DICT <- list(
   efficiency_ratio     = list(desc = "Efficiency Ratio",                       theme = "Operating Efficiency"),
   overhead             = list(desc = "Overhead Expenses",                      theme = "Operating Efficiency"),
   exp_comp_per_empl    = list(desc = "Compensation Expense per Employee",      theme = "Operating Efficiency"),
+  exp_office           = list(desc = "Office Operations Expense",              theme = "Operating Efficiency"),
+  exp_office_ratio     = list(desc = "Office Expense Ratio",                   theme = "Operating Efficiency"),
+  exp_education        = list(desc = "Education & Promotional Expense",        theme = "Operating Efficiency"),
   comp_per_empl        = list(desc = "Compensation per Employee",              theme = "Operating Efficiency"),
   ftes                 = list(desc = "Full-Time Equivalent Employees",         theme = "Operating Efficiency"),
   branches             = list(desc = "Number of Branches",                     theme = "Operating Efficiency"),
