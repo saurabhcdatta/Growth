@@ -245,6 +245,13 @@ CR_DICT <- list(
   lns_auto_new_accel   = list(desc = "New Auto Loan Origination Acceleration", theme = "Lending Activity"),
   lns_auto_used_accel  = list(desc = "Used Auto Loan Origination Acceleration",theme = "Lending Activity"),
   lns_re_accel         = list(desc = "RE Loan Origination Acceleration",       theme = "Lending Activity"),
+  lns_re_1_fr_accel    = list(desc = "1st Lien RE Share Acceleration",         theme = "Asset Composition"),
+  lns_tot_accel        = list(desc = "Total Loan Origination Acceleration",    theme = "Lending Activity"),
+  lns_auto_avg         = list(desc = "Average Auto Loan Size",                 theme = "Lending Activity"),
+  lns_re_avg           = list(desc = "Average RE Loan Size",                   theme = "Lending Activity"),
+  lns_unsecured_avg    = list(desc = "Average Unsecured Loan Size",            theme = "Lending Activity"),
+  lns_mbl_shr          = list(desc = "Member Business Loans (Share)",          theme = "Asset Composition"),
+  lns_mbl_pct          = list(desc = "Member Business Loans (% of Loans)",     theme = "Asset Composition"),
   dep_mmarket          = list(desc = "Money Market Deposits",                  theme = "Funding"),
   dep_certificates     = list(desc = "Share Certificates / CDs",               theme = "Funding"),
 
@@ -279,6 +286,10 @@ CR_DICT <- list(
   net_interest_inc     = list(desc = "Net Interest Income",                    theme = "Net Interest Margin"),
   interest_inc         = list(desc = "Total Interest Income",                  theme = "Net Interest Margin"),
   interest_exp         = list(desc = "Total Interest Expense",                 theme = "Net Interest Margin"),
+  inc_netp             = list(desc = "Net Interest Income (Periodic)",         theme = "Net Interest Margin"),
+  inc_net              = list(desc = "Net Income",                             theme = "Profitability"),
+  inc_int              = list(desc = "Interest Income",                        theme = "Net Interest Margin"),
+  inc_nint             = list(desc = "Non-Interest Income",                    theme = "Non-Interest Income"),
 
   # ── Non-Interest Income ──
   non_int_inc          = list(desc = "Non-Interest Income",                    theme = "Non-Interest Income"),
@@ -423,10 +434,16 @@ top10 <- head(imp, 10)
 imp_max_val <- max(top10$mean_importance, na.rm = TRUE)
 top10[, imp_pct := if (imp_max_val <= 1) mean_importance * 100 else mean_importance]
 
-# Truncate long labels
+# Truncate long labels — append a marker if duplicates result so factor()
+# doesn't fail on duplicate levels
 top10[, label_short := ifelse(nchar(label) > 48,
                                paste0(substr(label, 1, 46), "…"),
                                label)]
+# Disambiguate any duplicates by appending the source variable name in parens
+dup_mask <- duplicated(top10$label_short) | duplicated(top10$label_short, fromLast = TRUE)
+if (any(dup_mask)) {
+  top10[dup_mask, label_short := paste0(label_short, "  [", variable, "]")]
+}
 top10[, label_short := factor(label_short, levels = rev(label_short))]
 top10[, annotation := sprintf("%.0f%% • +%dQ lead", imp_pct, best_lead_q)]
 
