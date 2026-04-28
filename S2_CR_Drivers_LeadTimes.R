@@ -44,31 +44,19 @@ message(sprintf("Loaded panel   : %d rows | %d columns",
                 nrow(panel), ncol(panel)))
 
 # ════════════════════════════════════════════════════════════
-# 2. COMPUTE LEAD TIME PER CALL REPORT VARIABLE
+# 2. COMPUTE LEAD TIME — three competing methods, side-by-side
 # ════════════════════════════════════════════════════════════
-# For each (cr_var, target) pair and each lag 0..MAX_LAG, compute
-# correlation between cr_var(t) and target(t + lag). Pick the lag
-# at which AVERAGE |cor| across the 4 targets is highest.
+# Method A: lag at MAXIMUM correlation (current approach — usually picks 0)
+# Method B: lag at maximum correlation, but FORCE lag >= 1
+#           (asks: among LEADING relationships, which lag is strongest?)
+# Method C: PERSISTENCE LAG — longest lag at which |corr| is still
+#           >= 0.8 * max(|corr|). Asks: how far ahead does this signal
+#           remain materially predictive?
 
 target_vars <- c("yoy_fcu_pct", "yoy_fiscu_pct",
                  "yoy_fcu_assets_pct", "yoy_fiscu_assets_pct")
 
-# Aggregate panel to system level (system-wide quarterly series)
-# This mirrors what Part 10 does for macro variables
-sys <- panel[, lapply(.SD, function(x) {
-              if (is.numeric(x)) sum(x, na.rm = TRUE) else x[1]
-            }),
-            by = date,
-            .SDcols = setdiff(names(panel),
-                              c("date", "categories", "cat_label",
-                                "q1", "q2", "q3", "q4", "qtr"))]
-setorder(sys, date)
-
-# But for growth variables we need MEAN not SUM at system level
-# Actually growth rates already aggregated at panel level — use the
-# category-1 row (or any single category) as proxy. Cleanest: take
-# the first non-NA value per date for growth variables.
-# Better approach: re-aggregate from panel keeping growth as panel-mean.
+# Aggregate panel to system-level means for correlation analysis
 sys_means <- panel[, lapply(.SD, function(x) {
                 if (is.numeric(x)) mean(x, na.rm = TRUE) else x[1]
               }),
@@ -78,14 +66,15 @@ sys_means <- panel[, lapply(.SD, function(x) {
                                   "q1", "q2", "q3", "q4", "qtr"))]
 setorder(sys_means, date)
 
-# Compute lead time only for variables that appear in importance ranking
 imp_vars <- intersect(imp$variable, names(sys_means))
-message(sprintf("Computing lead times for %d call report variables...", length(imp_vars)))
+message(sprintf("Computing lead times (3 methods) for %d call report variables...",
+                length(imp_vars)))
 
-compute_best_lead <- function(cr_var) {
+# Compute the full lag profile for one variable (returns lag→avg|corr|)
+compute_lag_profile <- function(cr_var) {
   x <- as.numeric(sys_means[[cr_var]])
-  best_lag  <- 0L
-  best_avg  <- 0
+  out <- numeric(MAX_LAG + 1L)
+  names(out) <- as.character(0:MAX_LAG)
   for (lg in 0:MAX_LAG) {
     rs <- numeric(0)
     for (tv in target_vars) {
@@ -100,79 +89,300 @@ compute_best_lead <- function(cr_var) {
       r <- suppressWarnings(cor(x_now[ok], y_fut[ok]))
       if (!is.na(r)) rs <- c(rs, abs(r))
     }
-    if (length(rs) == 0) next
-    avg_r <- mean(rs)
-    if (avg_r > best_avg) {
-      best_avg <- avg_r
-      best_lag <- lg
-    }
+    out[as.character(lg)] <- if (length(rs) > 0) mean(rs) else NA_real_
   }
-  list(best_lead_q = best_lag, best_abs_corr = best_avg)
+  out
 }
 
-leads <- rbindlist(lapply(imp_vars, function(v) {
-  res <- compute_best_lead(v)
-  data.table(variable = v, best_lead_q = res$best_lead_q,
-             best_abs_corr = res$best_abs_corr)
+# Method A: argmax (allow any lag including 0)
+method_A_lag <- function(p) {
+  if (all(is.na(p))) return(NA_integer_)
+  as.integer(names(which.max(p)))
+}
+
+# Method B: argmax constrained to lag >= 1
+method_B_lag <- function(p) {
+  if (length(p) <= 1 || all(is.na(p[-1]))) return(NA_integer_)
+  p2 <- p[-1]  # drop lag 0
+  as.integer(names(which.max(p2)))
+}
+
+# Method C: longest lag where |corr| >= 0.8 * max(|corr|)
+method_C_lag <- function(p) {
+  if (all(is.na(p))) return(NA_integer_)
+  threshold <- 0.8 * max(p, na.rm = TRUE)
+  qualified <- which(p >= threshold)
+  if (length(qualified) == 0) return(NA_integer_)
+  as.integer(names(p)[max(qualified)])
+}
+
+# Compute all three for every variable
+diag <- rbindlist(lapply(imp_vars, function(v) {
+  prof <- compute_lag_profile(v)
+  data.table(
+    variable      = v,
+    lag_A_argmax  = method_A_lag(prof),
+    lag_B_lead    = method_B_lag(prof),
+    lag_C_persist = method_C_lag(prof),
+    corr_at_0     = round(prof["0"], 3),
+    corr_max      = round(max(prof, na.rm = TRUE), 3),
+    corr_at_lag_B = if (!is.na(method_B_lag(prof)))
+                       round(prof[as.character(method_B_lag(prof))], 3)
+                    else NA_real_,
+    corr_at_lag_C = if (!is.na(method_C_lag(prof)))
+                       round(prof[as.character(method_C_lag(prof))], 3)
+                    else NA_real_
+  )
 }))
+
+# Merge importance rank for sorting
+diag <- merge(diag, imp[, .(variable, mean_importance)], by = "variable")
+setorderv(diag, "mean_importance", order = -1L)
+
+# ── Print three-method comparison for top 10 ──────────────
+top10_diag <- head(diag, 10)
+
+message("\n", strrep("═", 110))
+message("LEAD TIME COMPARISON — Top 10 Call Report Drivers")
+message(strrep("═", 110))
+message(sprintf("%-32s | %5s | %5s | %5s | %6s | %6s | %6s | %6s",
+                "Variable", "A", "B", "C", "|r|@0", "|r|max", "|r|@B", "|r|@C"))
+message(strrep("─", 110))
+for (i in 1:nrow(top10_diag)) {
+  message(sprintf("%-32s | %5s | %5s | %5s | %6.3f | %6.3f | %6s | %6s",
+                  substr(top10_diag$variable[i], 1, 32),
+                  ifelse(is.na(top10_diag$lag_A_argmax[i]),  "NA", paste0("+", top10_diag$lag_A_argmax[i], "Q")),
+                  ifelse(is.na(top10_diag$lag_B_lead[i]),    "NA", paste0("+", top10_diag$lag_B_lead[i],   "Q")),
+                  ifelse(is.na(top10_diag$lag_C_persist[i]), "NA", paste0("+", top10_diag$lag_C_persist[i],"Q")),
+                  top10_diag$corr_at_0[i],
+                  top10_diag$corr_max[i],
+                  ifelse(is.na(top10_diag$corr_at_lag_B[i]), "  NA",
+                         sprintf("%.3f", top10_diag$corr_at_lag_B[i])),
+                  ifelse(is.na(top10_diag$corr_at_lag_C[i]), "  NA",
+                         sprintf("%.3f", top10_diag$corr_at_lag_C[i]))))
+}
+message(strrep("═", 110))
+message("Method A: argmax over lag 0..", MAX_LAG, "  (current approach)")
+message("Method B: argmax over lag 1..", MAX_LAG, "  (forces a leading signal)")
+message("Method C: longest lag where |r| >= 0.8 * max  (signal persistence)")
+message(strrep("═", 110))
+
+# Use Method A (current behaviour) for the chart — change the next line to
+# diag$lag_B_lead or diag$lag_C_persist to switch methods.
+leads <- diag[, .(variable,
+                   best_lead_q   = lag_A_argmax,
+                   best_abs_corr = corr_max)]
 
 # Merge importance with lead time
 imp <- merge(imp, leads, by = "variable", all.x = TRUE)
 imp[is.na(best_lead_q), best_lead_q := 0L]
 
 # ════════════════════════════════════════════════════════════
-# 3. LABEL & THEME CR VARIABLES
+# 3. LABEL & THEME — NCUA CALL REPORT DICTIONARY
 # ════════════════════════════════════════════════════════════
-# Use Part 5's existing var_clean if present
-if (!"var_clean" %in% names(imp)) {
-  imp[, var_clean := gsub("_", " ", variable)]
+# Maps known NCUA 5300 Call Report base names + acct codes to
+# human-readable descriptions and themes. This is the CR
+# counterpart to S1's FRB Variable Data Dictionary lookup.
+
+# (a) Specific NCUA Call Report fields & ratios
+CR_DICT <- list(
+  # ── Membership & Acquisition ──
+  members              = list(desc = "Total Members",                          theme = "Membership"),
+  member_count         = list(desc = "Total Members",                          theme = "Membership"),
+  potential_members    = list(desc = "Potential Members (FOM)",                theme = "Membership"),
+  acquisition_rate     = list(desc = "Member Acquisition Rate",                theme = "Membership"),
+  fom_size             = list(desc = "Field-of-Membership Size",               theme = "Membership"),
+
+  # ── Asset Levels & Composition (non-endogenous metrics) ──
+  assets_mil           = list(desc = "Total Assets ($M)",                      theme = "Asset Composition"),
+  assets_pct           = list(desc = "Asset Mix Composition (%)",              theme = "Asset Composition"),
+  cash_pct             = list(desc = "Cash & Equivalents (% of Assets)",       theme = "Asset Composition"),
+  investments_pct      = list(desc = "Investments (% of Assets)",              theme = "Asset Composition"),
+  loans_pct            = list(desc = "Loans (% of Assets)",                    theme = "Asset Composition"),
+  fixed_assets_pct     = list(desc = "Fixed Assets (% of Assets)",             theme = "Asset Composition"),
+  loan_to_share        = list(desc = "Loan-to-Share Ratio",                    theme = "Asset Composition"),
+  loan_to_asset        = list(desc = "Loan-to-Asset Ratio",                    theme = "Asset Composition"),
+  investment_to_asset  = list(desc = "Investment-to-Asset Ratio",              theme = "Asset Composition"),
+
+  # ── Capital & Solvency ──
+  net_worth            = list(desc = "Net Worth",                              theme = "Capital & Solvency"),
+  net_worth_ratio      = list(desc = "Net Worth Ratio",                        theme = "Capital & Solvency"),
+  capital_ratio        = list(desc = "Capital Ratio",                          theme = "Capital & Solvency"),
+  cap_adeq             = list(desc = "Capital Adequacy",                       theme = "Capital & Solvency"),
+  leverage_ratio       = list(desc = "Leverage Ratio",                         theme = "Capital & Solvency"),
+  risk_based_cap       = list(desc = "Risk-Based Capital Ratio",               theme = "Capital & Solvency"),
+
+  # ── Funding (Deposits / Shares) ──
+  dep_tot              = list(desc = "Total Deposits & Shares",                theme = "Funding"),
+  dep_regshr           = list(desc = "Regular Shares (Savings Accounts)",      theme = "Funding"),
+  dep_share_drft       = list(desc = "Share Drafts (Checking Accounts)",       theme = "Funding"),
+  dep_money_mkt        = list(desc = "Money Market Shares",                    theme = "Funding"),
+  dep_share_cert       = list(desc = "Share Certificates (CDs)",               theme = "Funding"),
+  dep_ira_keogh        = list(desc = "IRA / Keogh Accounts",                   theme = "Funding"),
+  dep_oth_nonshrreg    = list(desc = "Other Non-Regular Share Deposits",       theme = "Funding"),
+  insured_tot          = list(desc = "Total NCUSIF-Insured Shares",            theme = "Funding"),
+  insured_pct          = list(desc = "Insured Shares (% of Total)",            theme = "Funding"),
+  borrowings           = list(desc = "Total Borrowings",                       theme = "Funding"),
+
+  # ── Lending Activity ──
+  loans_tot            = list(desc = "Total Loans Outstanding",                theme = "Lending Activity"),
+  loans_real_estate    = list(desc = "Real Estate Loans",                      theme = "Lending Activity"),
+  loans_auto           = list(desc = "Auto Loans",                             theme = "Lending Activity"),
+  loans_credit_card    = list(desc = "Credit Card Loans",                      theme = "Lending Activity"),
+  loans_unsecured      = list(desc = "Unsecured Personal Loans",               theme = "Lending Activity"),
+  loans_business       = list(desc = "Member Business Loans",                  theme = "Lending Activity"),
+  loans_first_mtg      = list(desc = "First Mortgages",                        theme = "Lending Activity"),
+  loans_originated     = list(desc = "Loans Originated (Period)",              theme = "Lending Activity"),
+  loan_growth          = list(desc = "Loan Origination Volume",                theme = "Lending Activity"),
+
+  # ── Credit Risk ──
+  delinq_loans         = list(desc = "Delinquent Loans",                       theme = "Credit Risk"),
+  delinq_ratio         = list(desc = "Delinquency Ratio (60+ Days)",           theme = "Credit Risk"),
+  charge_off_ratio     = list(desc = "Net Charge-Off Ratio",                   theme = "Credit Risk"),
+  net_chargeoffs       = list(desc = "Net Charge-Offs",                        theme = "Credit Risk"),
+  allowance_ratio      = list(desc = "Allowance for Loan Losses Ratio",        theme = "Credit Risk"),
+  troubled_debt        = list(desc = "Troubled Debt Restructurings",           theme = "Credit Risk"),
+
+  # ── Profitability ──
+  roa                  = list(desc = "Return on Assets (ROA)",                 theme = "Profitability"),
+  roe                  = list(desc = "Return on Equity (ROE)",                 theme = "Profitability"),
+  net_income           = list(desc = "Net Income",                             theme = "Profitability"),
+  earnings             = list(desc = "Earnings",                               theme = "Profitability"),
+
+  # ── Net Interest Margin / Income ──
+  nim                  = list(desc = "Net Interest Margin",                    theme = "Net Interest Margin"),
+  net_interest_inc     = list(desc = "Net Interest Income",                    theme = "Net Interest Margin"),
+  interest_inc         = list(desc = "Total Interest Income",                  theme = "Net Interest Margin"),
+  interest_exp         = list(desc = "Total Interest Expense",                 theme = "Net Interest Margin"),
+
+  # ── Non-Interest Income ──
+  non_int_inc          = list(desc = "Non-Interest Income",                    theme = "Non-Interest Income"),
+  fee_inc              = list(desc = "Fee Income",                             theme = "Non-Interest Income"),
+  service_charge_inc   = list(desc = "Service Charge Income",                  theme = "Non-Interest Income"),
+
+  # ── Operating Efficiency ──
+  op_exp               = list(desc = "Operating Expenses",                     theme = "Operating Efficiency"),
+  op_exp_ratio         = list(desc = "Operating Expense Ratio",                theme = "Operating Efficiency"),
+  efficiency_ratio     = list(desc = "Efficiency Ratio",                       theme = "Operating Efficiency"),
+  overhead             = list(desc = "Overhead Expenses",                      theme = "Operating Efficiency"),
+  exp_comp_per_empl    = list(desc = "Compensation Expense per Employee",      theme = "Operating Efficiency"),
+  comp_per_empl        = list(desc = "Compensation per Employee",              theme = "Operating Efficiency"),
+  ftes                 = list(desc = "Full-Time Equivalent Employees",         theme = "Operating Efficiency"),
+  branches             = list(desc = "Number of Branches",                     theme = "Operating Efficiency"),
+
+  # ── Exit / Entry Dynamics ──
+  merger_rate          = list(desc = "Merger Rate (Annualised)",               theme = "Exit Dynamics"),
+  liquidation_rate     = list(desc = "Liquidation Rate",                       theme = "Exit Dynamics"),
+  net_entry_rate       = list(desc = "Net New-Charter Entry Rate",             theme = "New Entry"),
+  new_charters         = list(desc = "New Charters Granted",                   theme = "New Entry")
+)
+
+# (b) NCUA Call Report numeric account codes (selected critical ones).
+# These are the standard 5300 account numbers — extend as needed.
+NCUA_ACCT_DICT <- list(
+  "001" = list(desc = "Cash on Deposit",                                  theme = "Asset Composition"),
+  "002" = list(desc = "Cash on Hand",                                     theme = "Asset Composition"),
+  "007" = list(desc = "Cash & Cash Equivalents",                          theme = "Asset Composition"),
+  "010" = list(desc = "Total Investments",                                theme = "Asset Composition"),
+  "013" = list(desc = "Loans to Members",                                 theme = "Lending Activity"),
+  "025" = list(desc = "Allowance for Loan Losses",                        theme = "Credit Risk"),
+  "041" = list(desc = "Land & Building",                                  theme = "Asset Composition"),
+  "042" = list(desc = "Other Fixed Assets",                               theme = "Asset Composition"),
+  "658" = list(desc = "Real Estate Loans Granted YTD",                    theme = "Lending Activity"),
+  "697" = list(desc = "Total Members",                                    theme = "Membership"),
+  "722" = list(desc = "Other Real Estate Owned",                          theme = "Credit Risk"),
+  "730" = list(desc = "Reserves & Undivided Earnings",                    theme = "Capital & Solvency"),
+  "799" = list(desc = "Net Worth (Total)",                                theme = "Capital & Solvency"),
+  "902" = list(desc = "Total Investment Income",                          theme = "Net Interest Margin"),
+  "997" = list(desc = "Total Loan Income",                                theme = "Net Interest Margin")
+)
+
+# (c) Resolver — strips transformations, looks up base name, then acct code
+resolve_cr_label <- function(v) {
+  if (is.na(v) || v == "") return(list(desc = NA_character_, theme = "Other Operational"))
+  vl <- tolower(v)
+
+  # Strip transformation prefixes/suffixes to recover base name
+  base <- vl
+  base <- gsub("^yoy_", "", base)
+  base <- gsub("^qoq_", "", base)
+  base <- gsub("_lag[0-9]+$", "", base)
+  base <- gsub("_rmean[0-9]+$", "", base)
+  base <- gsub("_rsd[0-9]+$", "", base)
+  base <- gsub("_cyc$", "", base)
+  base <- gsub("_chg$", "", base)
+  base <- gsub("_accel$", "", base)
+
+  # Detect transformation prefix for label
+  prefix <- ""
+  if (grepl("^yoy_",  vl)) prefix <- "YoY "
+  if (grepl("^qoq_",  vl)) prefix <- "QoQ "
+
+  # 1) Try CR_DICT (full name match)
+  if (base %in% names(CR_DICT)) {
+    hit <- CR_DICT[[base]]
+    return(list(desc = paste0(prefix, hit$desc), theme = hit$theme))
+  }
+
+  # 2) Try NCUA account code match — extract digits if pattern is acct_NNN
+  m <- regmatches(base, regexpr("(?:^|_)acct_?([0-9]{3,4})", base, perl = TRUE))
+  if (length(m) > 0) {
+    code <- gsub("[^0-9]", "", m)
+    if (code %in% names(NCUA_ACCT_DICT)) {
+      hit <- NCUA_ACCT_DICT[[code]]
+      return(list(desc = paste0(prefix, hit$desc, " (Acct ", code, ")"),
+                  theme = hit$theme))
+    }
+    # Unknown account code — show as Acct NNN with a note
+    return(list(desc = paste0(prefix, "NCUA Account ", code, " (uncatalogued)"),
+                theme = "Other Operational"))
+  }
+
+  # 3) Heuristic theme assignment for uncatalogued names
+  theme <- classify_cr_theme(base)
+  pretty <- gsub("_", " ", base)
+  pretty <- tools::toTitleCase(pretty)
+  return(list(desc = paste0(prefix, pretty), theme = theme))
 }
 
-# Polish labels for executive readability
-prettify_cr <- function(v) {
-  v <- gsub("_", " ", v)
-  v <- tools::toTitleCase(v)
-  v <- gsub("\\bYoy\\b",   "YoY",   v)
-  v <- gsub("\\bQoq\\b",   "QoQ",   v)
-  v <- gsub("\\bCu\\b",    "CU",    v)
-  v <- gsub("\\bRoa\\b",   "ROA",   v)
-  v <- gsub("\\bRoe\\b",   "ROE",   v)
-  v <- gsub("\\bNcua\\b",  "NCUA",  v)
-  v <- gsub("\\bFcu\\b",   "FCU",   v)
-  v <- gsub("\\bFiscu\\b", "FISCU", v)
-  v <- gsub("\\bHhi\\b",   "HHI",   v)
-  v <- gsub("\\bNim\\b",   "NIM",   v)
-  v <- gsub("\\bLtv\\b",   "LTV",   v)
-  v <- gsub("\\bDq\\b",    "DQ",    v)
-  v
-}
-imp[, label := vapply(var_clean, prettify_cr, character(1))]
-
-# Theme classification — use existing theme if present, else assign
+# Heuristic theme classifier (fallback only)
 classify_cr_theme <- function(v) {
   vl <- tolower(v)
-  if (grepl("delinq|deling|chargeoff|charge_off|nonperf|loss",      vl)) return("Credit Risk")
-  if (grepl("net_worth|capital|cap_adeq|leverage_ratio|risk_based", vl)) return("Capital & Solvency")
-  if (grepl("loan_to_share|loan_to_asset|investment|securit|liquid",vl)) return("Asset Composition")
-  if (grepl("nim|net_interest|spread_inc|interest_inc",             vl)) return("Net Interest Margin")
+  if (grepl("delinq|chargeoff|charge_off|nonperf|loss|allowance",   vl)) return("Credit Risk")
+  if (grepl("net_worth|capital|cap_adeq|leverage_ratio|risk_based|reserves", vl)) return("Capital & Solvency")
+  if (grepl("loan_to_share|loan_to_asset|investment|securit|liquid|cash|fixed_asset", vl)) return("Asset Composition")
+  if (grepl("nim|net_interest|interest_inc|interest_exp",           vl)) return("Net Interest Margin")
   if (grepl("non_int_inc|fee_inc|service_charge",                   vl)) return("Non-Interest Income")
-  if (grepl("op_exp|efficiency|overhead|expense_ratio",             vl)) return("Operating Efficiency")
-  if (grepl("roa|roe|return_on|earnings|profit",                    vl)) return("Profitability")
-  if (grepl("members?|membership|fom_",                             vl)) return("Membership")
+  if (grepl("op_exp|efficiency|overhead|expense_ratio|compensation|empl|ftes|branch", vl)) return("Operating Efficiency")
+  if (grepl("roa|roe|return_on|earnings|profit|net_income",         vl)) return("Profitability")
+  if (grepl("members?|membership|fom_|acquisition|potential",       vl)) return("Membership")
   if (grepl("merger|liquid|acquis|exit",                            vl)) return("Exit Dynamics")
   if (grepl("net_entry|new_charter",                                vl)) return("New Entry")
-  if (grepl("loan|loans",                                           vl)) return("Lending Activity")
-  if (grepl("share|deposit",                                        vl)) return("Funding")
+  if (grepl("loan",                                                  vl)) return("Lending Activity")
+  if (grepl("share|deposit|insured|borrowing",                      vl)) return("Funding")
   return("Other Operational")
 }
 
-if (!"theme" %in% names(imp) || all(is.na(imp$theme))) {
-  imp[, theme := vapply(variable, classify_cr_theme, character(1))]
-} else {
-  # Use Part 5 theme but fall back to our classifier for "Other CU Variables"
-  imp[, theme := ifelse(is.na(theme) | theme == "" | theme == "Other CU Variables",
-                         vapply(variable, classify_cr_theme, character(1)),
-                         theme)]
+# Apply resolver to every variable in the importance ranking
+imp[, c("desc","theme") := {
+  res <- lapply(variable, resolve_cr_label)
+  list(vapply(res, function(x) x$desc,  character(1)),
+       vapply(res, function(x) x$theme, character(1)))
+}]
+
+imp[, label := desc]
+
+# Diagnostic
+n_resolved <- sum(imp$theme != "Other Operational")
+message(sprintf("\nResolved %d / %d call report variables to known themes (%.0f%%)",
+                n_resolved, nrow(imp), 100 * n_resolved / nrow(imp)))
+
+unresolved <- imp[theme == "Other Operational" & mean_importance > 0,
+                  .(variable, mean_importance)]
+if (nrow(unresolved) > 0) {
+  message("\nUnresolved (theme = Other Operational) — top 10 by importance:")
+  print(head(unresolved[order(-mean_importance)], 10))
+  message("Add these to CR_DICT or NCUA_ACCT_DICT for proper labels.")
 }
 
 # ════════════════════════════════════════════════════════════
