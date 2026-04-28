@@ -236,6 +236,25 @@ CR_DICT <- list(
   loans_first_mtg      = list(desc = "First Mortgages",                        theme = "Lending Activity"),
   loans_originated     = list(desc = "Loans Originated (Period)",              theme = "Lending Activity"),
   loan_growth          = list(desc = "Loan Origination Volume",                theme = "Lending Activity"),
+  # Loan portfolio totals (NCUA "lns_" prefix variants)
+  lns_tot              = list(desc = "Total Loans Outstanding",                theme = "Lending Activity"),
+  lns_auto_new         = list(desc = "New Auto Loans Outstanding",             theme = "Lending Activity"),
+  lns_auto_used        = list(desc = "Used Auto Loans Outstanding",            theme = "Lending Activity"),
+  lns_auto             = list(desc = "Total Auto Loans",                       theme = "Lending Activity"),
+  lns_re_1             = list(desc = "1st Lien Real Estate Loans",             theme = "Lending Activity"),
+  lns_re_2             = list(desc = "2nd Lien Real Estate Loans",             theme = "Lending Activity"),
+  lns_re_oth           = list(desc = "Other Real Estate Loans",                theme = "Lending Activity"),
+  lns_re_oth_ar        = list(desc = "Other RE Loans (Adj. Rate)",             theme = "Lending Activity"),
+  lns_re_oth_fr        = list(desc = "Other RE Loans (Fixed Rate)",            theme = "Lending Activity"),
+  lns_re_1_tot         = list(desc = "1st Lien RE Loans (Total)",              theme = "Lending Activity"),
+  lns_unsecured        = list(desc = "Unsecured Personal Loans",               theme = "Lending Activity"),
+  lns_credit_card      = list(desc = "Credit Card Loans",                      theme = "Lending Activity"),
+  lns_business         = list(desc = "Member Business Loans",                  theme = "Lending Activity"),
+  lns_mbl              = list(desc = "Member Business Loans",                  theme = "Lending Activity"),
+  lns_cc               = list(desc = "Credit Card Loans",                      theme = "Lending Activity"),
+  lns_re_1_tot_cyc     = list(desc = "1st Lien RE Loans (Cyclical)",           theme = "Lending Activity"),
+  networth_tot         = list(desc = "Total Net Worth",                        theme = "Capital & Solvency"),
+  dq_rate              = list(desc = "Total Loan Delinquency Rate",            theme = "Credit Risk"),
   lns_re_1_fr_shr      = list(desc = "1st Lien RE Loans (Share of Loans)",     theme = "Asset Composition"),
   lns_re_2_fr_shr      = list(desc = "2nd Lien RE Loans (Share of Loans)",     theme = "Asset Composition"),
   lns_auto_fr_shr      = list(desc = "Auto Loans (Share of Loans)",            theme = "Asset Composition"),
@@ -387,18 +406,18 @@ resolve_cr_label <- function(v) {
 # Heuristic theme classifier (fallback only)
 classify_cr_theme <- function(v) {
   vl <- tolower(v)
-  if (grepl("delinq|chargeoff|charge_off|nonperf|loss|allowance",   vl)) return("Credit Risk")
-  if (grepl("net_worth|capital|cap_adeq|leverage_ratio|risk_based|reserves", vl)) return("Capital & Solvency")
-  if (grepl("loan_to_share|loan_to_asset|investment|securit|liquid|cash|fixed_asset", vl)) return("Asset Composition")
-  if (grepl("nim|net_interest|interest_inc|interest_exp",           vl)) return("Net Interest Margin")
-  if (grepl("non_int_inc|fee_inc|service_charge",                   vl)) return("Non-Interest Income")
+  if (grepl("delinq|chargeoff|charge_off|nonperf|loss|allowance|^dq_|_dq_",   vl)) return("Credit Risk")
+  if (grepl("net_worth|networth|capital|cap_adeq|leverage_ratio|risk_based|reserves|pca", vl)) return("Capital & Solvency")
+  if (grepl("loan_to_share|loan_to_asset|investment|securit|liquid|cash|fixed_asset|_pct$|_shr$|_share$|fr_shr|fr_accel", vl)) return("Asset Composition")
+  if (grepl("nim|net_interest|interest_inc|interest_exp|inc_netp|inc_int",  vl)) return("Net Interest Margin")
+  if (grepl("non_int_inc|fee_inc|service_charge|inc_nint",                   vl)) return("Non-Interest Income")
   if (grepl("op_exp|efficiency|overhead|expense_ratio|compensation|empl|ftes|branch", vl)) return("Operating Efficiency")
-  if (grepl("roa|roe|return_on|earnings|profit|net_income",         vl)) return("Profitability")
-  if (grepl("members?|membership|fom_|acquisition|potential",       vl)) return("Membership")
-  if (grepl("merger|liquid|acquis|exit",                            vl)) return("Exit Dynamics")
-  if (grepl("net_entry|new_charter",                                vl)) return("New Entry")
-  if (grepl("loan",                                                  vl)) return("Lending Activity")
-  if (grepl("share|deposit|insured|borrowing",                      vl)) return("Funding")
+  if (grepl("roa|roe|return_on|earnings|profit|net_income|inc_net$",         vl)) return("Profitability")
+  if (grepl("members?|membership|fom_|acquisition|potential",                vl)) return("Membership")
+  if (grepl("merger|liquid|acquis|exit",                                     vl)) return("Exit Dynamics")
+  if (grepl("net_entry|new_charter",                                         vl)) return("New Entry")
+  if (grepl("^lns_|^loans?_|loan_origin|loan_growth|_avg$|_avg_",            vl)) return("Lending Activity")
+  if (grepl("share|deposit|insured|borrowing|^dep_",                         vl)) return("Funding")
   return("Other Operational")
 }
 
@@ -425,21 +444,51 @@ if (nrow(unresolved) > 0) {
 }
 
 # ════════════════════════════════════════════════════════════
-# 4. PICK TOP 10
+# 4. PICK TOP 10 — UNIQUE FACTORS ONLY
 # ════════════════════════════════════════════════════════════
+# Group variables by their underlying economic factor: yoy_X,
+# qoq_X, X_lag2, X_accel, etc. all map to the same "factor" X.
+# Keep only the highest-importance variant per factor so the
+# chart shows 10 distinct economic drivers, not 10 transformations
+# of 5 drivers.
+
+strip_to_factor <- function(v) {
+  vl <- tolower(v)
+  vl <- gsub("^yoy_", "", vl)
+  vl <- gsub("^qoq_", "", vl)
+  vl <- gsub("^d_", "", vl)
+  vl <- gsub("_lag[0-9]+$", "", vl)
+  vl <- gsub("_rmean[0-9]+$", "", vl)
+  vl <- gsub("_rsd[0-9]+$", "", vl)
+  vl <- gsub("_cyc$", "", vl)
+  vl <- gsub("_chg$", "", vl)
+  vl <- gsub("_accel$", "", vl)
+  vl <- gsub("_trail[0-9]+$", "", vl)
+  vl
+}
+
+imp[, factor_base := vapply(variable, strip_to_factor, character(1))]
+
 setorderv(imp, "mean_importance", order = -1L)
-top10 <- head(imp, 10)
+
+# Within each factor group, keep only the row with highest importance
+imp_unique <- imp[!duplicated(factor_base)]
+
+# Now take the top 10 unique factors
+top10 <- head(imp_unique, 10)
+
+message(sprintf("\nCollapsed %d total variables to %d unique factors. Showing top 10.",
+                nrow(imp), nrow(imp_unique)))
 
 # Detect importance scale
 imp_max_val <- max(top10$mean_importance, na.rm = TRUE)
 top10[, imp_pct := if (imp_max_val <= 1) mean_importance * 100 else mean_importance]
 
-# Truncate long labels — append a marker if duplicates result so factor()
-# doesn't fail on duplicate levels
+# Truncate long labels
 top10[, label_short := ifelse(nchar(label) > 48,
                                paste0(substr(label, 1, 46), "…"),
                                label)]
-# Disambiguate any duplicates by appending the source variable name in parens
+# Safety net for duplicates (shouldn't happen now, but defensive)
 dup_mask <- duplicated(top10$label_short) | duplicated(top10$label_short, fromLast = TRUE)
 if (any(dup_mask)) {
   top10[dup_mask, label_short := paste0(label_short, "  [", variable, "]")]
