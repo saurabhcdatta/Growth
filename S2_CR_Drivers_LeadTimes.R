@@ -192,7 +192,7 @@ CR_DICT <- list(
   members              = list(desc = "Total Members",                          theme = "Membership"),
   member_count         = list(desc = "Total Members",                          theme = "Membership"),
   potential_members    = list(desc = "Potential Members (FOM)",                theme = "Membership"),
-  acquisition_rate     = list(desc = "Member Acquisition Rate",                theme = "Membership"),
+  acquisition_rate     = list(desc = "Member Acquisition Rate (Level)",       theme = "Membership"),
   fom_size             = list(desc = "Field-of-Membership Size",               theme = "Membership"),
 
   # ── Asset Levels & Composition (non-endogenous metrics) ──
