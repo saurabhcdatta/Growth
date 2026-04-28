@@ -192,7 +192,7 @@ CR_DICT <- list(
   members              = list(desc = "Total Members",                          theme = "Membership"),
   member_count         = list(desc = "Total Members",                          theme = "Membership"),
   potential_members    = list(desc = "Potential Members (FOM)",                theme = "Membership"),
-  acquisition_rate     = list(desc = "Member Acquisition Rate (Level)",       theme = "Membership"),
+  acquisition_rate     = list(desc = "Member Acquisition Rate",                theme = "Membership"),
   fom_size             = list(desc = "Field-of-Membership Size",               theme = "Membership"),
 
   # ── Asset Levels & Composition (non-endogenous metrics) ──
@@ -544,7 +544,7 @@ p <- ggplot(top10, aes(x = imp_pct, y = label_short, fill = theme)) +
             size = 3.4, fontface = "bold", color = "#333333") +
   scale_fill_manual(values = theme_colors_used, name = "Theme") +
   scale_x_continuous(labels = function(x) paste0(x, "%"),
-                     expand = expansion(mult = c(0, 0.32))) +
+                     expand = expansion(mult = c(0, 0.40))) +
   labs(
     title    = "Top Call Report Drivers by Importance and Lead Time",
     subtitle = "How well each CU-specific operational variable explains future CU growth, and how far ahead the signal arrives\nLead time = quarters the call report variable leads CU response",
@@ -557,7 +557,8 @@ p <- ggplot(top10, aes(x = imp_pct, y = label_short, fill = theme)) +
     plot.title    = element_text(face = "bold", size = 16, color = "#0B1D3A"),
     plot.subtitle = element_text(size = 11, color = "#666666", margin = margin(b = 12)),
     plot.caption  = element_text(size = 8, color = "#999999", hjust = 0),
-    axis.text.y   = element_text(face = "bold", size = 10, color = "#333333"),
+    axis.text.y   = element_text(face = "bold", size = 10, color = "#333333",
+                                  hjust = 1, margin = margin(r = 5)),
     axis.text.x   = element_text(size = 9, color = "#666666"),
     panel.grid.minor   = element_blank(),
     panel.grid.major.y = element_blank(),
@@ -567,7 +568,7 @@ p <- ggplot(top10, aes(x = imp_pct, y = label_short, fill = theme)) +
     legend.title = element_text(size = 9, face = "bold"),
     plot.background  = element_rect(fill = "white", color = NA),
     panel.background = element_rect(fill = "white", color = NA),
-    plot.margin = margin(20, 25, 15, 15)
+    plot.margin = margin(20, 30, 15, 30)
   )
 
 # ── Save ─────────────────────────────────────────────────
@@ -575,15 +576,15 @@ pdf_path <- file.path(PLOT_DIR, "S2_cr_drivers_leadtimes.pdf")
 png_path <- file.path(PLOT_DIR, "S2_cr_drivers_leadtimes.png")
 
 tryCatch({
-  grDevices::cairo_pdf(pdf_path, width = 13, height = 7.5)
+  grDevices::cairo_pdf(pdf_path, width = 14, height = 8)
   print(p); grDevices::dev.off()
 }, error = function(e) {
   try(grDevices::dev.off(), silent = TRUE)
-  grDevices::pdf(pdf_path, width = 13, height = 7.5)
+  grDevices::pdf(pdf_path, width = 14, height = 8)
   print(p); grDevices::dev.off()
 })
 
-ggsave(png_path, p, width = 13, height = 7.5, dpi = 200, bg = "white")
+ggsave(png_path, p, width = 14, height = 8, dpi = 200, bg = "white")
 
 message(sprintf("\nSaved: %s", pdf_path))
 message(sprintf("Saved: %s", png_path))
