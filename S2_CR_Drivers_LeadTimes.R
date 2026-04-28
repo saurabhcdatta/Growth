@@ -242,6 +242,11 @@ CR_DICT <- list(
   lns_unsecured_fr_shr = list(desc = "Unsecured Loans (Share of Loans)",       theme = "Asset Composition"),
   lns_credit_card_fr_shr = list(desc = "Credit Cards (Share of Loans)",        theme = "Asset Composition"),
   lns_business_fr_shr  = list(desc = "Business Loans (Share of Loans)",        theme = "Asset Composition"),
+  lns_auto_new_accel   = list(desc = "New Auto Loan Origination Acceleration", theme = "Lending Activity"),
+  lns_auto_used_accel  = list(desc = "Used Auto Loan Origination Acceleration",theme = "Lending Activity"),
+  lns_re_accel         = list(desc = "RE Loan Origination Acceleration",       theme = "Lending Activity"),
+  dep_mmarket          = list(desc = "Money Market Deposits",                  theme = "Funding"),
+  dep_certificates     = list(desc = "Share Certificates / CDs",               theme = "Funding"),
 
   # ── Credit Risk ──
   delinq_loans         = list(desc = "Delinquent Loans",                       theme = "Credit Risk"),
