@@ -64,11 +64,17 @@ for (i in seq_len(nrow(cells))) {
                              lo95 = tail(h$value, 1), hi95 = tail(h$value, 1))
     f_path <- bind_rows(bridge, f %>% select(date, point, lo80, hi80, lo95, hi95))
     keypts <- f %>% filter(horizon_q %in% c(4, 12, 20)) %>%
-      mutate(lab = paste0(c("1 yr", "3 yr", "5 yr")[match(horizon_q, c(4, 12, 20))],
-                          " (", q_label, ")\n", comma(point)))
+      mutate(lab  = paste0(c("1 yr", "3 yr", "5 yr")[match(horizon_q, c(4, 12, 20))],
+                           " (", q_label, ")\n", comma(point)),
+             tier = match(horizon_q, c(4, 12, 20)))
   }
 
   y_top <- max(c(h$value, if (nrow(f)) f$hi95 else 0), na.rm = TRUE)
+
+  ## Labels sit at three fixed heights above the panel so they never overlap
+  ## each other, with a leader line down to the point they describe.
+  if (nrow(f) > 0)
+    keypts <- keypts %>% mutate(y_lab = y_top * (1.06 + 0.11 * (tier - 1)))
 
   p <- ggplot()
 
@@ -87,12 +93,12 @@ for (i in seq_len(nrow(cells))) {
     p <- p +
       geom_line(data = f_path, aes(date, point), colour = COL_FC,
                 linewidth = 0.8, linetype = "22") +
-      geom_segment(data = keypts, aes(x = date, xend = date, y = 0, yend = point),
-                   colour = "grey60", linetype = "dotted", linewidth = 0.3) +
+      geom_segment(data = keypts, aes(x = date, xend = date, y = point, yend = y_lab),
+                   colour = "grey65", linetype = "dotted", linewidth = 0.3) +
       geom_point(data = keypts, aes(date, point), colour = COL_FC,
                  size = 2.4, shape = 21, fill = "white", stroke = 1.1) +
-      geom_label(data = keypts, aes(date, point, label = lab),
-                 vjust = -0.35, hjust = 0.5, size = 3.05, lineheight = 0.95,
+      geom_label(data = keypts, aes(date, y_lab, label = lab),
+                 vjust = 0.5, hjust = 1.05, size = 3.05, lineheight = 0.95,
                  label.size = 0.25, label.padding = unit(0.16, "lines"),
                  colour = COL_FC, fill = "white", family = "sans",
                  fontface = "bold")
@@ -100,15 +106,12 @@ for (i in seq_len(nrow(cells))) {
 
   p <- p +
     scale_x_date(date_breaks = "2 years", date_labels = "%Y",
-                 expand = expansion(mult = c(0.01, 0.06))) +
+                 expand = expansion(mult = c(0.01, 0.10))) +
     scale_y_continuous(labels = comma,
-                       limits = c(0, y_top * 1.28),
+                       limits = c(0, y_top * 1.40),
                        expand = expansion(mult = c(0, 0.02))) +
     labs(title = cells$label[i],
-         subtitle = paste0(d$spec, "  |  ",
-                           ifelse(d$status == "MODEL",
-                                  "selected by expanding-window cross-validation",
-                                  d$method)),
+         subtitle = paste0(d$spec, "  |  ", d$method),
          x = NULL, y = "Number of credit unions",
          caption = paste0("Solid navy: actual counts, 2005Q1-2026Q1. Dashed red: forecast. ",
                           "Shaded bands: 80% and 95% prediction intervals.\n",

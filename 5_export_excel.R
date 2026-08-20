@@ -92,13 +92,16 @@ readme <- c(
   "  5. Reliability is horizon-dependent. The 1-year numbers are dependable for the",
   "     large middle categories; the 5-year numbers extrapolate a consolidation pace",
   "     that is a policy and rate-environment outcome, not a time series property.",
-  "  6. FLAT-FORECAST OVERRIDE. Where cross-validation selected a model whose",
-  "     forecast path is essentially constant, and the series has a statistically",
-  "     detectable trend, the next-best non-flat candidate was published instead.",
-  "     The Summary tab records which cells were overridden, what CV actually",
-  "     preferred, and the CV RMSE cost of the override. An override buys a more",
-  "     plausible path at some expected accuracy cost; it is a judgment call, not",
-  "     a statistical improvement.",
+  "  6. PUBLICATION RULES. Cross-validation ranks the candidates; publication",
+  "     then filters them. A published model must (a) carry a drift term, so the",
+  "     path is not constant by construction, (b) keep the whole 5-year path above",
+  "     15% of the current count and above 1 credit union, so no cell is forecast",
+  "     to zero out, and (c) move at least 2% over 5 years. The best-ranked",
+  "     candidate meeting all three is published; where none does, a log-scale",
+  "     drift model is forced. The Summary tab records the CV rank published, what",
+  "     CV actually preferred, and the RMSE cost of the rules. These rules buy",
+  "     plausible paths at some expected accuracy cost: they are a reporting",
+  "     judgment, not a statistical improvement.",
   "",
   "TAB NAMING",
   "  R<region>_T<cu_type>_<asset category>. See the Cell Index tab.")
@@ -116,7 +119,7 @@ names(sum_styles) <- names(summary_tbl)
 sum_styles[c("actual_2026Q1", "fc_1yr", "fc_3yr", "fc_5yr",
              "chg_1yr", "chg_3yr", "chg_5yr")] <- S_INT
 sum_styles[c("cv_rmse_all", "cv_rmse_h4", "cv_rmse_h12", "cv_rmse_h20",
-             "aicc", "lb_pvalue", "chg_5yr_pct", "override_rmse_cost")] <- S_DEC
+             "aicc", "lb_pvalue", "chg_5yr_pct", "rule_rmse_cost")] <- S_DEC
 
 b <- xl_block(summary_tbl, start_row = 3, col_styles = as.integer(sum_styles))
 rows <- c(xl_line("Forecast summary - all 56 cells", 1, S_TITLE), b$xml)
@@ -180,17 +183,18 @@ for (i in seq_len(nrow(cells))) {
   hdr <- data.frame(
     Field = c("Cell", "Region", "Charter type (cu_type)", "Asset category",
               "Status", "Published model", "Selection basis",
-              "Trend detected", "Flat-forecast override",
-              "Model CV preferred", "CV RMSE cost of override",
+              "Trend detected", "Forced model",
+              "CV rank published", "Model CV preferred", "CV RMSE cost of rules",
               "5-year change (%)", "AICc (full sample)",
               "Ljung-Box p (lag 8)", "Actual count 2026Q1"),
     Value = c(cells$label[i], cells$region[i], cells$cu_type[i],
               CAT_PRETTY[as.character(cells$asset_cat[i])],
               d$status, d$spec, d$method,
               ifelse(isTRUE(d$has_trend), "yes", "no"),
-              ifelse(isTRUE(d$override), "YES", "no"),
-              ifelse(isTRUE(d$override), d$cv_winner_spec, "same as published"),
-              ifelse(isTRUE(d$override), format(d$override_rmse_cost), "-"),
+              ifelse(isTRUE(d$forced), "YES", "no"),
+              ifelse(is.na(d$cv_rank_used), "n/a", format(d$cv_rank_used)),
+              ifelse(is.na(d$cv_winner_spec), "-", d$cv_winner_spec),
+              ifelse(is.na(d$rule_rmse_cost), "-", format(d$rule_rmse_cost)),
               ifelse(is.na(d$chg_5yr_pct), "n/a", format(d$chg_5yr_pct)),
               ifelse(is.na(d$aicc), "n/a", format(d$aicc)),
               ifelse(is.na(d$lb_pvalue), "n/a", format(d$lb_pvalue)),
