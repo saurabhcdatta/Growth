@@ -38,6 +38,7 @@ H_MAX    <- 20
 N_SIM    <- 500          # simulation paths for prediction intervals
 MID_H    <- 8            # template's "2 Year Out"; set 12 for 3-year
 MID_LAB  <- if (MID_H == 8) "Count 2 Year Out" else "Count 3 Year Out"
+SMALL_N  <- 5            # buckets below this are flagged as too small to quote
 FC_START <- c(2026, 2)
 
 set.seed(20260821)
@@ -61,17 +62,24 @@ fq_index <- tibble::tibble(
   quarter   = (FC_START[2] - 1 + 0:(H_MAX - 1)) %% 4 + 1) %>%
   mutate(q_label = paste0(year, "Q", quarter))
 
-## Largest-remainder allocation: split an integer total across shares
-## so the parts sum exactly to the whole.
-alloc_lr <- function(total_int, shares) {
+## Integer allocation that does not wobble.
+##
+## Largest-remainder rounding is applied independently at each horizon, so a
+## bucket sitting near a .5 boundary can round down at one horizon and up at
+## the next -- producing paths like 2, 1, 2, 2 that read as a forecast of
+## decline-then-recovery when nothing of the sort is being forecast.
+##
+## Instead: round each bucket's own (smooth) path to the nearest integer, which
+## is monotone whenever the underlying path is, then absorb the small residual
+## needed to hit the total into the single largest bucket, where +/-2 on a base
+## of several hundred is invisible.
+alloc_smooth <- function(total_int, shares, big_idx) {
   raw  <- shares / sum(shares) * total_int
-  base <- floor(raw)
-  left <- total_int - sum(base)
-  if (left > 0) {
-    ord <- order(raw - base, decreasing = TRUE)
-    base[ord[seq_len(left)]] <- base[ord[seq_len(left)]] + 1
-  }
-  as.integer(base)
+  out  <- round(raw)
+  out[out < 0] <- 0
+  resid <- total_int - sum(out)
+  out[big_idx] <- max(out[big_idx] + resid, 0)
+  as.integer(out)
 }
 
 ## ---------------------------------------------------------------------
@@ -171,8 +179,9 @@ for (g in seq_len(nrow(groups))) {
   }
 
   ## ---- Assemble, with integer counts that sum to the total ----------
+  big_idx <- which.max(colMeans(S)[CAT_LABELS])
   pts <- t(sapply(seq_len(H_MAX), function(h)
-    alloc_lr(round(tot_point[h]), share_pt[h, ])))
+    alloc_smooth(round(tot_point[h]), share_pt[h, ], big_idx)))
   colnames(pts) <- CAT_LABELS
 
   gr <- expand_grid(horizon_q = 1:H_MAX, asset_cat = CAT_LABELS) %>%
@@ -285,6 +294,9 @@ for (g in seq_len(nrow(groups))) {
                       f1 = wide[[as.character(4)]],
                       fm = wide[[as.character(MID_H)]],
                       f5 = wide[[as.character(H_MAX)]])
+  ## Buckets this small cannot support a point estimate; mark them
+  d <- d %>% mutate(small = pmax(Current, f1, fm, f5) < SMALL_N,
+                    cat_lab = ifelse(small, paste0(cat_lab, " *"), cat_lab))
   tab_data[[gname]] <- d
 
   dl <- d %>%
@@ -295,7 +307,7 @@ for (g in seq_len(nrow(groups))) {
 
   p <- ggplot(dl, aes(cat_lab, count, fill = horizon)) +
     geom_col(position = position_dodge(width = 0.8), width = 0.72) +
-    geom_text(aes(label = ifelse(count > 0, comma(count), "")),
+    geom_text(aes(label = ifelse(count >= SMALL_N, comma(count), "")),
               position = position_dodge(width = 0.8), vjust = -0.35,
               size = 2.6, colour = "grey20", family = "sans") +
     scale_fill_manual(values = COLS4) +
@@ -341,8 +353,13 @@ method <- c(
   "    SHARES  the seven bucket shares are transformed to six additive log-ratios",
   "            against the largest bucket, each forecast by ARIMA, then mapped",
   "            back to seven shares that sum to 1 by construction.",
-  "  Counts = share x total, rounded by largest remainder so the seven buckets sum",
-  "  exactly to the forecast total.",
+  "  Counts = share x total. Each bucket's path is rounded to the nearest whole",
+  "  credit union and the small residual is absorbed into the largest bucket, so",
+  "  the seven buckets sum exactly to the total without small buckets appearing to",
+  "  fall and recover on rounding alone.",
+  "",
+  paste0("  Buckets with fewer than ", SMALL_N, " credit unions are marked with * and should be"),
+  "  read as directional. A count that small carries no meaningful point estimate.",
   "",
   "WHAT THIS DOES AND DOES NOT FIX",
   "  Buckets can still gain share, so the substantive finding survives: state",
@@ -414,7 +431,11 @@ for (g in seq_len(nrow(groups))) {
     xl_line(c("", "Total", sum(d$Current), sum(d$f1), sum(d$fm), sum(d$f5)), 11,
             c(S_NORM, S_BOLD, rep(S_INTBOLD, 4)), col = 1),
     xl_line("Sample 2005Q1-2026Q1. Buckets are reconciled to the group total.", 13),
-    xl_line("See the Method tab for why these differ from the independent-model workbook.", 14))
+    xl_line("See the Method tab for why these differ from the independent-model workbook.", 14),
+    xl_line(if (any(d$small))
+              paste0("* Fewer than ", SMALL_N, " credit unions: treat as directional only, ",
+                     "not as a point forecast.")
+            else "", 15))
 
   png_g <- file.path(CHART_DIR, paste0(gname, ".png"))
   SH[[4 + g]] <- list(name = gname, rows = rows,
